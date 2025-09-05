@@ -244,7 +244,7 @@ class DatabaseSeeder:
     
     async def check_tables_exist(self) -> bool:
         """Check if required tables exist"""
-        tables = ['streamer', 'stream', 'chunk', 'clip', 'job']
+        tables = ['streamers', 'streams', 'chunks', 'clips']
         
         for table in tables:
             result = await self.conn.fetchval(
@@ -263,11 +263,11 @@ class DatabaseSeeder:
         print("🧹 Clearing existing data...")
         
         # Delete in reverse dependency order
-        await self.conn.execute("DELETE FROM job WHERE type LIKE 'seed_%'")
-        await self.conn.execute("DELETE FROM clip WHERE id IN (SELECT id FROM clip WHERE created_at > NOW() - INTERVAL '1 day')")
-        await self.conn.execute("DELETE FROM chunk WHERE id IN (SELECT id FROM chunk WHERE created_at > NOW() - INTERVAL '1 day')")
-        await self.conn.execute("DELETE FROM stream WHERE platform_id LIKE 'v123456789%' OR platform_id = 'dQw4w9WgXcQ'")
-        await self.conn.execute("DELETE FROM streamer WHERE name IN ('xQc', 'Pokimane', 'Shroud', 'HasanAbi', 'Ludwig')")
+        # await self.conn.execute("DELETE FROM jobs WHERE type LIKE 'seed_%'")  # TODO: Uncomment when jobs table is created
+        await self.conn.execute("DELETE FROM clips WHERE id IN (SELECT id FROM clips WHERE \"created_at\" > NOW() - INTERVAL '1 day')")
+        await self.conn.execute("DELETE FROM chunks WHERE id IN (SELECT id FROM chunks WHERE \"createdAt\" > NOW() - INTERVAL '1 day')")
+        await self.conn.execute("DELETE FROM streams WHERE \"videoId\" LIKE 'v123456789%' OR \"videoId\" = 'dQw4w9WgXcQ'")
+        await self.conn.execute("DELETE FROM streamers WHERE username IN ('xQc', 'Pokimane', 'Shroud', 'HasanAbi', 'Ludwig')")
         
         print("✅ Existing seed data cleared")
     
@@ -280,10 +280,10 @@ class DatabaseSeeder:
             streamer_id = str(uuid.uuid4())
             
             await self.conn.execute("""
-                INSERT INTO streamer (
-                    id, name, display_name, platform, platform_id, avatar_url,
-                    description, subscriber_count, is_active, settings, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                INSERT INTO streamers (
+                    id, username, "displayName", platform, "platformId", "avatarUrl",
+                    description, "isActive", settings, "createdAt", "updatedAt"
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             """, 
                 streamer_id,
                 streamer_data['name'],
@@ -292,7 +292,6 @@ class DatabaseSeeder:
                 streamer_data['platform_id'],
                 streamer_data['avatar_url'],
                 streamer_data['description'],
-                streamer_data['subscriber_count'],
                 streamer_data['is_active'],
                 json.dumps(streamer_data['settings']),
                 datetime.utcnow(),
@@ -324,11 +323,11 @@ class DatabaseSeeder:
             )
             
             await self.conn.execute("""
-                INSERT INTO stream (
-                    id, streamer_id, title, platform_url, platform_id, duration,
-                    game_name, viewer_count, language, tags, thumbnail_url,
-                    status, file_path, file_size, started_at, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                INSERT INTO streams (
+                    id, "streamerId", title, "originalUrl", "videoId", duration,
+                    platform, status, "thumbnailUrl", "localVideoPath", "fileSize",
+                    "streamDate", "viewCount", metadata, "createdAt", "updatedAt"
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             """,
                 stream_id,
                 streamer_id,
@@ -336,15 +335,18 @@ class DatabaseSeeder:
                 stream_data['platform_url'],
                 stream_data['platform_id'],
                 stream_data['duration'],
-                stream_data['game_name'],
-                stream_data['viewer_count'],
-                stream_data['language'],
-                stream_data['tags'],
+                'twitch' if 'twitch' in stream_data['platform_url'] else 'youtube',  # platform
+                'completed',  # status
                 stream_data['thumbnail_url'],
-                'processed',  # status
-                f"/data/streams/{stream_data['platform_id']}.mp4",  # file_path
-                2147483648,  # file_size (2GB)
+                f"/data/streams/{stream_data['platform_id']}.mp4",  # localVideoPath
+                2147483648,  # fileSize (2GB)
                 stream_start,
+                stream_data['viewer_count'],
+                json.dumps({
+                    'game_name': stream_data['game_name'],
+                    'language': stream_data['language'],
+                    'tags': stream_data['tags']
+                }),
                 datetime.utcnow(),
                 datetime.utcnow()
             )
@@ -370,19 +372,20 @@ class DatabaseSeeder:
                 end_time = start_time + chunk_duration
                 
                 await self.conn.execute("""
-                    INSERT INTO chunk (
-                        id, stream_id, start_time, end_time, duration, file_path,
-                        file_size, transcription, vision_analysis, audio_features,
-                        status, created_at, updated_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    INSERT INTO chunks (
+                        id, "streamId", title, description, "startTime", "endTime", duration, "videoPath",
+                        transcription, "visualFeatures", "audioFeatures",
+                        status, "createdAt", "updatedAt"
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 """,
                     chunk_id,
                     stream_id,
+                    f"Chunk {i+1}",  # title
+                    f"Video chunk {i+1} from stream",  # description
                     start_time,
                     end_time,
                     chunk_duration,
                     f"/data/chunks/{chunk_id}.mp4",
-                    104857600,  # 100MB per chunk
                     json.dumps({
                         "segments": [
                             {
@@ -406,7 +409,7 @@ class DatabaseSeeder:
                         "silence_ratio": 0.1,
                         "speech_ratio": 0.7
                     }),
-                    'processed',
+                    'completed',
                     datetime.utcnow(),
                     datetime.utcnow()
                 )
@@ -416,7 +419,7 @@ class DatabaseSeeder:
         print(f"  ✅ Created {len(chunk_ids)} chunks")
         return chunk_ids
     
-    async def seed_clips(self, chunk_ids: List[str]) -> List[str]:
+    async def seed_clips(self, chunk_ids: List[str], stream_ids: List[str]) -> List[str]:
         """Insert sample clips"""
         print("🎬 Seeding clips...")
         clip_ids = []
@@ -426,16 +429,20 @@ class DatabaseSeeder:
         
         for i, chunk_id in enumerate(selected_chunks[:15]):  # Limit to 15 clips
             clip_id = str(uuid.uuid4())
+            # Get the stream_id for this chunk (chunks are created per stream)
+            stream_id = stream_ids[i // 10] if i // 10 < len(stream_ids) else stream_ids[0]
             
             await self.conn.execute("""
-                INSERT INTO clip (
-                    id, chunk_id, title, start_time, end_time, duration,
-                    highlight_score, score_breakdown, aspect_ratio, status,
-                    file_path, thumbnail_path, captions_path, metadata,
-                    created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                INSERT INTO clips (
+                    id, "stream_id", "chunk_id", title, "start_time", "end_time", duration,
+                    "highlight_score", "score_breakdown", status,
+                    "source_file_path", "thumbnail_path", metadata,
+                    "render_settings", "caption_settings",
+                    "created_at", "updated_at"
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             """,
                 clip_id,
+                stream_id,  # stream_id
                 chunk_id,
                 f"Epic Highlight #{i+1}",
                 30,  # start_time within chunk
@@ -449,15 +456,28 @@ class DatabaseSeeder:
                     "face_presence": 0.7,
                     "scene_changes": 0.6
                 }),
-                '9:16',  # aspect_ratio
-                'ready',  # status
+                'rendered',  # status
                 f"/data/clips/{clip_id}.mp4",
                 f"/data/clips/{clip_id}_thumb.jpg",
-                f"/data/clips/{clip_id}.srt",
                 json.dumps({
                     "tags": ["highlight", "gaming", "epic"],
                     "auto_generated": True,
-                    "confidence": 0.85
+                    "confidence": 0.85,
+                    "aspect_ratio": "9:16"
+                }),
+                json.dumps({
+                    "quality": "1080p",
+                    "aspect_ratio": "9:16",
+                    "fps": 30,
+                    "bitrate": 5000
+                }),
+                json.dumps({
+                    "enabled": True,
+                    "font_size": 24,
+                    "font_family": "Arial",
+                    "position": "bottom",
+                    "color": "#FFFFFF",
+                    "background": "#000000"
                 }),
                 datetime.utcnow(),
                 datetime.utcnow()
@@ -468,72 +488,75 @@ class DatabaseSeeder:
         print(f"  ✅ Created {len(clip_ids)} clips")
         return clip_ids
     
-    async def seed_jobs(self, stream_ids: List[str], clip_ids: List[str]):
-        """Insert sample jobs"""
-        print("⚙️ Seeding jobs...")
-        
-        for i, job_data in enumerate(SAMPLE_JOBS):
-            job_id = str(uuid.uuid4())
-            
-            # Update job data with actual IDs
-            if job_data['type'] == 'generate_highlights' and stream_ids:
-                job_data['data']['stream_id'] = stream_ids[0]
-            elif job_data['type'] == 'render_clip' and clip_ids:
-                job_data['data']['clip_id'] = clip_ids[0]
-            
-            # Set timestamps
-            created_at = datetime.utcnow() - timedelta(hours=i)
-            started_at = created_at + timedelta(minutes=5) if job_data['status'] != 'pending' else None
-            completed_at = started_at + timedelta(minutes=30) if job_data['status'] == 'completed' else None
-            
-            await self.conn.execute("""
-                INSERT INTO job (
-                    id, type, status, priority, data, result, error_message,
-                    retry_count, max_retries, created_at, started_at, completed_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            """,
-                job_id,
-                job_data['type'],
-                job_data['status'],
-                job_data['priority'],
-                json.dumps(job_data['data']),
-                json.dumps(job_data['result']) if job_data['result'] else None,
-                job_data['error_message'],
-                job_data['retry_count'],
-                job_data['max_retries'],
-                created_at,
-                started_at,
-                completed_at,
-                datetime.utcnow()
-            )
-            
-            print(f"  ✅ Created job: {job_data['type']} ({job_data['status']})")
+    # TODO: Uncomment when jobs table is created
+    # async def seed_jobs(self, stream_ids: List[str], clip_ids: List[str]):
+    #     """Insert sample jobs"""
+    #     print("⚙️ Seeding jobs...")
+    #     
+    #     for i, job_data in enumerate(SAMPLE_JOBS):
+    #         job_id = str(uuid.uuid4())
+    #         
+    #         # Update job data with actual IDs
+    #         if job_data['type'] == 'generate_highlights' and stream_ids:
+    #             job_data['data']['stream_id'] = stream_ids[0]
+    #         elif job_data['type'] == 'render_clip' and clip_ids:
+    #             job_data['data']['clip_id'] = clip_ids[0]
+    #         
+    #         # Set timestamps
+    #         created_at = datetime.utcnow() - timedelta(hours=i)
+    #         started_at = created_at + timedelta(minutes=5) if job_data['status'] != 'pending' else None
+    #         completed_at = started_at + timedelta(minutes=30) if job_data['status'] == 'completed' else None
+    #         
+    #         await self.conn.execute("""
+    #             INSERT INTO jobs (
+    #                 id, type, status, priority, data, result, error_message,
+    #                 retry_count, max_retries, created_at, started_at, completed_at, updated_at
+    #             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    #         """,
+    #             job_id,
+    #             job_data['type'],
+    #             job_data['status'],
+    #             job_data['priority'],
+    #             json.dumps(job_data['data']),
+    #             json.dumps(job_data['result']) if job_data['result'] else None,
+    #             job_data['error_message'],
+    #             job_data['retry_count'],
+    #             job_data['max_retries'],
+    #             created_at,
+    #             started_at,
+    #             completed_at,
+    #             datetime.utcnow()
+    #         )
+    #         
+    #         print(f"  ✅ Created job: {job_data['type']} ({job_data['status']})")
     
     async def verify_seeded_data(self):
         """Verify that data was seeded correctly"""
         print("🔍 Verifying seeded data...")
         
         # Count records
-        streamer_count = await self.conn.fetchval("SELECT COUNT(*) FROM streamer")
-        stream_count = await self.conn.fetchval("SELECT COUNT(*) FROM stream")
-        chunk_count = await self.conn.fetchval("SELECT COUNT(*) FROM chunk")
-        clip_count = await self.conn.fetchval("SELECT COUNT(*) FROM clip")
-        job_count = await self.conn.fetchval("SELECT COUNT(*) FROM job")
+        streamer_count = await self.conn.fetchval("SELECT COUNT(*) FROM streamers")
+        stream_count = await self.conn.fetchval("SELECT COUNT(*) FROM streams")
+        chunk_count = await self.conn.fetchval("SELECT COUNT(*) FROM chunks")
+        clip_count = await self.conn.fetchval("SELECT COUNT(*) FROM clips")
+        # job_count = await self.conn.fetchval("SELECT COUNT(*) FROM jobs")  # TODO: Uncomment when jobs table is created
         
         print(f"  📊 Streamers: {streamer_count}")
         print(f"  📊 Streams: {stream_count}")
         print(f"  📊 Chunks: {chunk_count}")
         print(f"  📊 Clips: {clip_count}")
-        print(f"  📊 Jobs: {job_count}")
+        # print(f"  📊 Jobs: {job_count}")  # TODO: Uncomment when jobs table is created
         
         # Sample some data
-        sample_streamer = await self.conn.fetchrow("SELECT name, display_name FROM streamer LIMIT 1")
+        sample_streamer = await self.conn.fetchrow("SELECT username, \"displayName\" FROM streamers LIMIT 1")
         if sample_streamer:
-            print(f"  🎯 Sample streamer: {sample_streamer['display_name']} ({sample_streamer['name']})")
+            print(f"  🎯 Sample streamer: {sample_streamer['displayName']} ({sample_streamer['username']})")
         
-        sample_stream = await self.conn.fetchrow("SELECT title, game_name FROM stream LIMIT 1")
+        sample_stream = await self.conn.fetchrow("SELECT title, metadata FROM streams LIMIT 1")
         if sample_stream:
-            print(f"  🎯 Sample stream: {sample_stream['title'][:40]}... ({sample_stream['game_name']})")
+            metadata = json.loads(sample_stream['metadata']) if sample_stream['metadata'] else {}
+            game_name = metadata.get('game_name', 'Unknown')
+            print(f"  🎯 Sample stream: {sample_stream['title'][:40]}... ({game_name})")
         
         print("✅ Data verification complete")
 
@@ -564,8 +587,8 @@ async def main():
         streamer_ids = await seeder.seed_streamers()
         stream_ids = await seeder.seed_streams(streamer_ids)
         chunk_ids = await seeder.seed_chunks(stream_ids)
-        clip_ids = await seeder.seed_clips(chunk_ids)
-        await seeder.seed_jobs(stream_ids, clip_ids)
+        clip_ids = await seeder.seed_clips(chunk_ids, stream_ids)
+        # await seeder.seed_jobs(stream_ids, clip_ids)  # TODO: Uncomment when jobs table is created
         
         # Verify results
         print("\n" + "=" * 50)

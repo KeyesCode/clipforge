@@ -8,7 +8,7 @@ aiohttp==3.9.1
 tenacity==8.2.3
 
 # Computer vision dependencies
-opencv-python==4.8.1.78
+opencv-python-headless==4.8.1.78
 numpy==1.24.3
 pillow==10.1.0
 scikit-image==0.21.0
@@ -20,8 +20,8 @@ scenedetect==0.6.2
 # Face recognition
 insightface==0.7.3
 onnxruntime==1.16.3
-torch==2.1.1
-torchvision==0.16.1
+torch==2.1.1+cpu
+torchvision==0.16.1+cpu
 
 # Media processing
 pymediainfo==6.1.0

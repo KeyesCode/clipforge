@@ -1,7 +1,15 @@
-FROM python:3.10-slim
+FROM python:3.10-slim-bookworm
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FONTCONFIG_PATH=/etc/fonts
 
 # Install FFmpeg and system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ffmpeg \
     libavcodec-dev \
     libavformat-dev \
@@ -13,9 +21,9 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     libgomp1 \
-    libgl1-mesa-glx \
+    libgl1 \
     libjpeg-dev \
     libpng-dev \
     libtiff-dev \
@@ -25,20 +33,16 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     wget \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    FONTCONFIG_PATH=/etc/fonts
 
 # Copy requirements first for better layer caching
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
+RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
