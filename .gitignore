@@ -1,0 +1,43 @@
+# Node
+node_modules/
+**/node_modules/
+**/**/node_modules/
+npm-debug.log*
+pnpm-lock.yaml
+yarn-error.log
+
+# Next.js / web build
+.next/
+out/
+.vercel/
+
+# NestJS / TS build
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Monorepo junk
+.turbo/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+logs/
+.env
+.env.*.local
+**/.env
+**/**/.env

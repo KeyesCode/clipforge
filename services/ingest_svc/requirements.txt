@@ -1,0 +1,56 @@
+# ClipForge Ingest Service Dependencies
+# Video download and processing service
+
+# Core video processing
+yt-dlp>=2023.12.30
+ffmpeg-python>=0.2.0
+
+# HTTP client and async support
+aiohttp>=3.9.0
+asyncio-mqtt>=0.13.0
+
+# Redis for job queue communication
+redis>=5.0.0
+aioredis>=2.0.0
+
+# Data validation and serialization
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# JSON handling and utilities
+orjson>=3.9.0
+python-dateutil>=2.8.0
+
+# Logging and monitoring
+structlog>=23.0.0
+prometheus-client>=0.19.0
+
+# Environment and configuration
+python-dotenv>=1.0.0
+
+# HTTP server framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# File system operations
+pathlib2>=2.3.7
+watchdog>=3.0.0
+
+# Video metadata extraction
+pymediainfo>=6.0.0
+
+# Error handling and retries
+tenacity>=8.2.0
+
+# UUID and time utilities
+uuid>=1.30
+pytz>=2023.3
+
+# Async PostgreSQL client (for direct DB operations if needed)
+asyncpg>=0.29.0
+
+# HTTP client for service communication
+httpx>=0.25.0
+
+# Process management
+psutil>=5.9.0

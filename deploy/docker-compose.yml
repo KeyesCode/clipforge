@@ -1,0 +1,345 @@
+version: '3.8'
+
+services:
+  # Infrastructure Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: clipforge_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - clipforge_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: clipforge_redis
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - clipforge_network
+
+  # Core Application Services
+  orchestrator:
+    build:
+      context: ../apps/orchestrator
+      dockerfile: Dockerfile
+    container_name: clipforge_orchestrator
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - PORT=${ORCHESTRATOR_PORT}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ORIGIN=${CORS_ORIGIN}
+      - INGEST_SERVICE_URL=${INGEST_SERVICE_URL}
+      - ASR_SERVICE_URL=${ASR_SERVICE_URL}
+      - VISION_SERVICE_URL=${VISION_SERVICE_URL}
+      - SCORING_SERVICE_URL=${SCORING_SERVICE_URL}
+      - RENDER_SERVICE_URL=${RENDER_SERVICE_URL}
+      - PUBLISHER_SERVICE_URL=${PUBLISHER_SERVICE_URL}
+      - WEBSOCKET_PORT=${WEBSOCKET_PORT}
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS}
+      - JOB_TIMEOUT=${JOB_TIMEOUT}
+      - STORAGE_PATH=${STORAGE_PATH}
+    ports:
+      - "${ORCHESTRATOR_PORT}:${ORCHESTRATOR_PORT}"
+      - "${WEBSOCKET_PORT}:${WEBSOCKET_PORT}"
+    volumes:
+      - storage_data:${STORAGE_PATH}
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${ORCHESTRATOR_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    container_name: clipforge_web
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+    ports:
+      - "${WEB_PORT}:3000"
+    depends_on:
+      - orchestrator
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  publisher:
+    build:
+      context: ../apps/publisher
+      dockerfile: Dockerfile
+    container_name: clipforge_publisher
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - REDIS_URL=${REDIS_URL}
+      - YOUTUBE_CLIENT_ID=${YOUTUBE_CLIENT_ID}
+      - YOUTUBE_CLIENT_SECRET=${YOUTUBE_CLIENT_SECRET}
+      - YOUTUBE_REDIRECT_URI=${YOUTUBE_REDIRECT_URI}
+      - TWITTER_API_KEY=${TWITTER_API_KEY}
+      - TWITTER_API_SECRET=${TWITTER_API_SECRET}
+      - TWITTER_ACCESS_TOKEN=${TWITTER_ACCESS_TOKEN}
+      - TWITTER_ACCESS_SECRET=${TWITTER_ACCESS_SECRET}
+      - TWITTER_BEARER_TOKEN=${TWITTER_BEARER_TOKEN}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
+      - STORAGE_PATH=${STORAGE_PATH}
+      - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE}
+      - UPLOAD_TIMEOUT=${UPLOAD_TIMEOUT}
+    volumes:
+      - storage_data:${STORAGE_PATH}
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+      - orchestrator
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  # Python Microservices
+  ingest_svc:
+    build:
+      context: ../services/ingest_svc
+      dockerfile: Dockerfile
+    container_name: clipforge_ingest
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - STORAGE_PATH=${STORAGE_PATH}
+      - CHUNK_DURATION=${CHUNK_DURATION}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP}
+      - MAX_RESOLUTION=${MAX_RESOLUTION}
+      - AUDIO_BITRATE=${AUDIO_BITRATE}
+      - VIDEO_CODEC=${VIDEO_CODEC}
+      - AUDIO_CODEC=${AUDIO_CODEC}
+      - TEMP_DIR=${TEMP_DIR}
+      - MAX_DOWNLOAD_SIZE=${MAX_DOWNLOAD_SIZE}
+      - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT}
+    volumes:
+      - storage_data:${STORAGE_PATH}
+      - temp_data:${TEMP_DIR}
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  asr_svc:
+    build:
+      context: ../services/asr_svc
+      dockerfile: Dockerfile
+    container_name: clipforge_asr
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - STORAGE_PATH=${STORAGE_PATH}
+      - WHISPER_MODEL=${WHISPER_MODEL}
+      - WHISPER_DEVICE=${WHISPER_DEVICE}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
+      - LANGUAGE=${LANGUAGE}
+      - BEAM_SIZE=${BEAM_SIZE}
+      - VAD_FILTER=${VAD_FILTER}
+      - VAD_THRESHOLD=${VAD_THRESHOLD}
+      - TEMP_DIR=${TEMP_DIR}
+    volumes:
+      - storage_data:${STORAGE_PATH}
+      - temp_data:${TEMP_DIR}
+      - whisper_cache:/root/.cache/huggingface
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  vision_svc:
+    build:
+      context: ../services/vision_svc
+      dockerfile: Dockerfile
+    container_name: clipforge_vision
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - STORAGE_PATH=${STORAGE_PATH}
+      - SCENE_THRESHOLD=${SCENE_THRESHOLD}
+      - MIN_SCENE_LENGTH=${MIN_SCENE_LENGTH}
+      - FACE_DETECTION_MODEL=${FACE_DETECTION_MODEL}
+      - FACE_CONFIDENCE_THRESHOLD=${FACE_CONFIDENCE_THRESHOLD}
+      - FRAME_SAMPLE_RATE=${FRAME_SAMPLE_RATE}
+      - TEMP_DIR=${TEMP_DIR}
+    volumes:
+      - storage_data:${STORAGE_PATH}
+      - temp_data:${TEMP_DIR}
+      - insightface_cache:/root/.insightface
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  scoring_svc:
+    build:
+      context: ../services/scoring_svc
+      dockerfile: Dockerfile
+    container_name: clipforge_scoring
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - STORAGE_PATH=${STORAGE_PATH}
+      - SCORING_MODEL=${SCORING_MODEL}
+      - FEATURE_WEIGHTS_ASR=${FEATURE_WEIGHTS_ASR}
+      - FEATURE_WEIGHTS_VISION=${FEATURE_WEIGHTS_VISION}
+      - FEATURE_WEIGHTS_AUDIO=${FEATURE_WEIGHTS_AUDIO}
+      - MIN_CLIP_DURATION=${MIN_CLIP_DURATION}
+      - MAX_CLIP_DURATION=${MAX_CLIP_DURATION}
+      - TOP_CLIPS_COUNT=${TOP_CLIPS_COUNT}
+      - OVERLAP_THRESHOLD=${OVERLAP_THRESHOLD}
+      - TEMP_DIR=${TEMP_DIR}
+    volumes:
+      - storage_data:${STORAGE_PATH}
+      - temp_data:${TEMP_DIR}
+      - ./logs:/app/logs
+      - ../services/scoring_svc/config:/app/config
+    depends_on:
+      - redis
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  render_svc:
+    build:
+      context: ../services/render_svc
+      dockerfile: Dockerfile
+    container_name: clipforge_render
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - STORAGE_PATH=${STORAGE_PATH}
+      - OUTPUT_FORMATS=${OUTPUT_FORMATS}
+      - CAPTION_STYLE=${CAPTION_STYLE}
+      - CAPTION_FONT=${CAPTION_FONT}
+      - CAPTION_FONT_SIZE=${CAPTION_FONT_SIZE}
+      - CAPTION_POSITION=${CAPTION_POSITION}
+      - WATERMARK_ENABLED=${WATERMARK_ENABLED}
+      - WATERMARK_PATH=${WATERMARK_PATH}
+      - WATERMARK_POSITION=${WATERMARK_POSITION}
+      - WATERMARK_OPACITY=${WATERMARK_OPACITY}
+      - TEMP_DIR=${TEMP_DIR}
+    volumes:
+      - storage_data:${STORAGE_PATH}
+      - temp_data:${TEMP_DIR}
+      - ./logs:/app/logs
+      - ../packages/ffmpeg_presets:/app/presets
+    depends_on:
+      - redis
+    networks:
+      - clipforge_network
+    restart: unless-stopped
+
+  # Monitoring and Management (Optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: clipforge_redis_ui
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD}
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - clipforge_network
+    profiles:
+      - monitoring
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: clipforge_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@clipforge.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "8080:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - clipforge_network
+    profiles:
+      - monitoring
+
+# Named Volumes
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  storage_data:
+    driver: local
+  temp_data:
+    driver: local
+  whisper_cache:
+    driver: local
+  insightface_cache:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# Networks
+networks:
+  clipforge_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

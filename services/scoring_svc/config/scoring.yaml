@@ -1,0 +1,256 @@
+# ClipForge Scoring Service Configuration
+# Multi-modal highlight scoring system for automatic clip generation
+
+# Service Configuration
+service:
+  name: "scoring_svc"
+  version: "1.0.0"
+  port: 8004
+  log_level: "INFO"
+  
+# Redis Configuration
+redis:
+  host: "redis"
+  port: 6379
+  db: 0
+  queue_name: "scoring_queue"
+  result_ttl: 3600  # 1 hour
+
+# Scoring Algorithm Configuration
+scoring:
+  # Overall scoring method
+  fusion_method: "weighted_average"  # Options: weighted_average, max_pooling, learned_fusion
+  
+  # Component weights for fusion (must sum to 1.0)
+  weights:
+    audioEnergy: 0.25      # Audio volume/energy analysis
+    speechActivity: 0.30   # Speech detection and activity
+    visualActivity: 0.25   # Motion and scene changes
+    facePresence: 0.20     # Face detection and engagement
+  
+  # Minimum score threshold for clip generation
+  min_score_threshold: 0.6
+  
+  # Maximum clips per stream
+  max_clips_per_stream: 10
+  
+  # Clip duration constraints (seconds)
+  clip_duration:
+    min: 15
+    max: 60
+    preferred: 30
+  
+  # Overlap handling
+  overlap:
+    max_overlap_ratio: 0.3  # Maximum allowed overlap between clips
+    merge_threshold: 0.8    # Score threshold for merging overlapping clips
+
+# Audio Energy Scoring
+audio_energy:
+  # Window size for energy calculation (seconds)
+  window_size: 1.0
+  
+  # Smoothing parameters
+  smoothing:
+    enabled: true
+    window: 5  # Moving average window
+  
+  # Normalization
+  normalization:
+    method: "percentile"  # Options: percentile, z_score, min_max
+    percentile_range: [10, 90]
+  
+  # Peak detection
+  peak_detection:
+    enabled: true
+    prominence: 0.1
+    distance: 5  # Minimum distance between peaks (seconds)
+
+# Speech Activity Scoring
+speech_activity:
+  # Voice Activity Detection (VAD) parameters
+  vad:
+    threshold: 0.5
+    min_duration: 2.0  # Minimum speech segment duration
+  
+  # Speech rate analysis
+  speech_rate:
+    enabled: true
+    optimal_wpm: 150  # Words per minute for optimal score
+    tolerance: 50     # Tolerance range around optimal
+  
+  # Confidence weighting
+  confidence_weighting:
+    enabled: true
+    min_confidence: 0.7
+  
+  # Keyword detection (optional)
+  keywords:
+    enabled: false
+    boost_factor: 1.2
+    keywords: ["amazing", "incredible", "wow", "insane", "clutch", "poggers"]
+
+# Visual Activity Scoring
+visual_activity:
+  # Scene change detection
+  scene_changes:
+    weight: 0.4
+    min_confidence: 0.3
+    boost_factor: 1.5  # Boost score for scene changes
+  
+  # Motion intensity
+  motion:
+    weight: 0.6
+    smoothing_window: 3
+    threshold: 0.2
+  
+  # Frame difference analysis
+  frame_diff:
+    enabled: true
+    sample_rate: 1.0  # Frames per second to analyze
+    threshold: 0.1
+
+# Face Presence Scoring
+face_presence:
+  # Face detection parameters
+  detection:
+    min_confidence: 0.7
+    min_face_size: 0.02  # Minimum face size as fraction of frame
+  
+  # Engagement scoring
+  engagement:
+    # Face visibility duration
+    visibility_weight: 0.5
+    min_visibility_duration: 2.0
+    
+    # Face size (larger faces = more engaging)
+    size_weight: 0.3
+    optimal_face_ratio: 0.15  # Optimal face size as fraction of frame
+    
+    # Face position (center is better)
+    position_weight: 0.2
+    center_bias: true
+  
+  # Multiple faces handling
+  multiple_faces:
+    enabled: true
+    max_faces: 3
+    diminishing_returns: 0.8  # Factor for additional faces
+
+# Temporal Analysis
+temporal:
+  # Context window for scoring
+  context_window: 10.0  # Seconds before/after for context
+  
+  # Trend analysis
+  trends:
+    enabled: true
+    window_size: 30.0  # Seconds
+    trend_weight: 0.1  # Weight for trend component
+  
+  # Momentum scoring
+  momentum:
+    enabled: true
+    decay_factor: 0.9
+    boost_threshold: 0.7
+
+# Post-processing
+post_processing:
+  # Score smoothing
+  smoothing:
+    enabled: true
+    method: "gaussian"  # Options: gaussian, moving_average, savgol
+    window_size: 5
+    sigma: 1.0  # For gaussian smoothing
+  
+  # Peak enhancement
+  peak_enhancement:
+    enabled: true
+    factor: 1.2
+    min_prominence: 0.1
+  
+  # Noise reduction
+  noise_reduction:
+    enabled: true
+    threshold: 0.1  # Remove scores below this threshold
+
+# Clip Generation
+clip_generation:
+  # Clip boundary detection
+  boundaries:
+    method: "scene_aware"  # Options: fixed, scene_aware, speech_aware
+    padding: 2.0  # Seconds of padding around detected boundaries
+  
+  # Quality filters
+  quality_filters:
+    min_audio_quality: 0.5
+    min_visual_quality: 0.5
+    max_silence_ratio: 0.3
+  
+  # Ranking and selection
+  ranking:
+    method: "score_based"  # Options: score_based, diversity_based, hybrid
+    diversity_weight: 0.2  # For hybrid ranking
+    temporal_spread: true  # Ensure clips are spread across the stream
+
+# Model Configuration (for future ML-based scoring)
+models:
+  # Audio models
+  audio:
+    energy_model: null
+    vad_model: "silero_vad"
+  
+  # Vision models
+  vision:
+    scene_detection: "pyscenedetect"
+    face_detection: "insightface"
+    motion_detection: "opencv"
+  
+  # Fusion models
+  fusion:
+    model_path: null  # Path to trained fusion model
+    fallback_to_weighted: true
+
+# Performance Configuration
+performance:
+  # Batch processing
+  batch_size: 10
+  max_workers: 4
+  
+  # Memory management
+  max_memory_usage: "2GB"
+  chunk_processing: true
+  
+  # Caching
+  cache:
+    enabled: true
+    ttl: 3600  # 1 hour
+    max_size: 1000  # Maximum cached items
+
+# Debugging and Monitoring
+debug:
+  save_intermediate_scores: false
+  score_visualization: false
+  detailed_logging: false
+  
+monitoring:
+  metrics_enabled: true
+  score_distribution_tracking: true
+  performance_tracking: true
+
+# Platform-specific adjustments
+platform_adjustments:
+  twitch:
+    # Twitch-specific scoring adjustments
+    chat_integration: false  # Future feature
+    emote_detection: false   # Future feature
+    
+  youtube:
+    # YouTube-specific adjustments
+    thumbnail_optimization: true
+    title_analysis: false  # Future feature
+    
+  general:
+    # General streaming platform adjustments
+    game_detection: false  # Future feature
+    category_awareness: false  # Future feature

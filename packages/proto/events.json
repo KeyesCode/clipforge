@@ -1,0 +1,897 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ClipForge Event Schemas",
+  "description": "Shared event schemas for communication between ClipForge microservices",
+  "version": "1.0.0",
+  
+  "definitions": {
+    "baseEvent": {
+      "type": "object",
+      "properties": {
+        "eventId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Unique identifier for the event"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp when event was created"
+        },
+        "version": {
+          "type": "string",
+          "default": "1.0.0",
+          "description": "Event schema version"
+        },
+        "source": {
+          "type": "string",
+          "description": "Service that generated the event"
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID to correlate related events across services"
+        }
+      },
+      "required": ["eventId", "timestamp", "source"]
+    },
+
+    "jobStatus": {
+      "type": "string",
+      "enum": ["pending", "processing", "completed", "failed", "cancelled"]
+    },
+
+    "clipStatus": {
+      "type": "string",
+      "enum": ["pending", "processing", "ready", "approved", "rejected", "published"]
+    },
+
+    "streamMetadata": {
+      "type": "object",
+      "properties": {
+        "streamId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "streamerId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "duration": {
+          "type": "number",
+          "description": "Duration in seconds"
+        },
+        "thumbnailUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "uploadDate": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "viewCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["streamId", "streamerId", "title", "url"]
+    },
+
+    "chunkMetadata": {
+      "type": "object",
+      "properties": {
+        "chunkId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "streamId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "startTime": {
+          "type": "number",
+          "description": "Start time in seconds"
+        },
+        "endTime": {
+          "type": "number",
+          "description": "End time in seconds"
+        },
+        "duration": {
+          "type": "number",
+          "description": "Duration in seconds"
+        },
+        "filePath": {
+          "type": "string"
+        },
+        "fileSize": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["chunkId", "streamId", "startTime", "endTime", "filePath"]
+    },
+
+    "transcriptionData": {
+      "type": "object",
+      "properties": {
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "number",
+                "description": "Start time in seconds"
+              },
+              "end": {
+                "type": "number",
+                "description": "End time in seconds"
+              },
+              "text": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "words": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "word": {
+                      "type": "string"
+                    },
+                    "start": {
+                      "type": "number"
+                    },
+                    "end": {
+                      "type": "number"
+                    },
+                    "confidence": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "required": ["word", "start", "end"]
+                }
+              }
+            },
+            "required": ["start", "end", "text"]
+          }
+        },
+        "language": {
+          "type": "string",
+          "description": "Detected language code (ISO 639-1)"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Overall transcription confidence"
+        }
+      },
+      "required": ["segments"]
+    },
+
+    "visionAnalysis": {
+      "type": "object",
+      "properties": {
+        "sceneCuts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "timestamp": {
+                "type": "number",
+                "description": "Scene cut timestamp in seconds"
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": ["timestamp"]
+          }
+        },
+        "faces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "timestamp": {
+                "type": "number"
+              },
+              "bbox": {
+                "type": "object",
+                "properties": {
+                  "x": {"type": "number"},
+                  "y": {"type": "number"},
+                  "width": {"type": "number"},
+                  "height": {"type": "number"}
+                },
+                "required": ["x", "y", "width", "height"]
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "landmarks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "x": {"type": "number"},
+                    "y": {"type": "number"}
+                  },
+                  "required": ["x", "y"]
+                }
+              }
+            },
+            "required": ["timestamp", "bbox"]
+          }
+        },
+        "motionIntensity": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "timestamp": {
+                "type": "number"
+              },
+              "intensity": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": ["timestamp", "intensity"]
+          }
+        }
+      }
+    },
+
+    "highlightScore": {
+      "type": "object",
+      "properties": {
+        "overall": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Overall highlight score"
+        },
+        "components": {
+          "type": "object",
+          "properties": {
+            "audioEnergy": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "speechActivity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "visualActivity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "facePresence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "textSentiment": {
+              "type": "number",
+              "minimum": -1,
+              "maximum": 1
+            }
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": ["overall"]
+    },
+
+    "clipMetadata": {
+      "type": "object",
+      "properties": {
+        "clipId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "streamId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "startTime": {
+          "type": "number"
+        },
+        "endTime": {
+          "type": "number"
+        },
+        "duration": {
+          "type": "number"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "score": {
+          "$ref": "#/definitions/highlightScore"
+        },
+        "status": {
+          "$ref": "#/definitions/clipStatus"
+        },
+        "aspectRatios": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["16:9", "9:16", "1:1", "4:5"]
+          }
+        },
+        "filePaths": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "rendered": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "required": ["clipId", "streamId", "startTime", "endTime", "title"]
+    }
+  },
+
+  "events": {
+    "streamIngested": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "stream.ingested"
+            },
+            "data": {
+              "$ref": "#/definitions/streamMetadata"
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "streamChunked": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "stream.chunked"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "streamId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "chunks": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/chunkMetadata"
+                  }
+                },
+                "totalChunks": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": ["streamId", "chunks", "totalChunks"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "chunkTranscribed": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "chunk.transcribed"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chunkId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "streamId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "transcription": {
+                  "$ref": "#/definitions/transcriptionData"
+                },
+                "processingTime": {
+                  "type": "number",
+                  "description": "Processing time in seconds"
+                }
+              },
+              "required": ["chunkId", "streamId", "transcription"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "chunkAnalyzed": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "chunk.analyzed"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chunkId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "streamId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "analysis": {
+                  "$ref": "#/definitions/visionAnalysis"
+                },
+                "processingTime": {
+                  "type": "number"
+                }
+              },
+              "required": ["chunkId", "streamId", "analysis"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "highlightsScored": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "highlights.scored"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "streamId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "highlights": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "startTime": {
+                        "type": "number"
+                      },
+                      "endTime": {
+                        "type": "number"
+                      },
+                      "score": {
+                        "$ref": "#/definitions/highlightScore"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "description": "Human-readable explanation for the score"
+                      }
+                    },
+                    "required": ["startTime", "endTime", "score"]
+                  }
+                },
+                "totalHighlights": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": ["streamId", "highlights", "totalHighlights"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "clipGenerated": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "clip.generated"
+            },
+            "data": {
+              "$ref": "#/definitions/clipMetadata"
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "clipRendered": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "clip.rendered"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "clipId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "aspectRatio": {
+                  "type": "string",
+                  "enum": ["16:9", "9:16", "1:1", "4:5"]
+                },
+                "outputPath": {
+                  "type": "string"
+                },
+                "fileSize": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "duration": {
+                  "type": "number"
+                },
+                "resolution": {
+                  "type": "object",
+                  "properties": {
+                    "width": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "height": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "required": ["width", "height"]
+                },
+                "processingTime": {
+                  "type": "number"
+                }
+              },
+              "required": ["clipId", "aspectRatio", "outputPath", "fileSize"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "clipApproved": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "clip.approved"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "clipId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "approvedBy": {
+                  "type": "string",
+                  "description": "User ID or system that approved the clip"
+                },
+                "approvedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "publishTargets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["youtube", "twitter", "tiktok", "instagram"]
+                  }
+                },
+                "metadata": {
+                  "type": "object",
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "required": ["clipId", "approvedBy", "approvedAt", "publishTargets"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "clipPublished": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "clip.published"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "clipId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "platform": {
+                  "type": "string",
+                  "enum": ["youtube", "twitter", "tiktok", "instagram"]
+                },
+                "platformId": {
+                  "type": "string",
+                  "description": "Platform-specific ID for the published content"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "Public URL of the published content"
+                },
+                "publishedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "metadata": {
+                  "type": "object",
+                  "properties": {
+                    "views": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "likes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "shares": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "comments": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              },
+              "required": ["clipId", "platform", "platformId", "publishedAt"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "jobStatusChanged": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "job.status_changed"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "jobId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "jobType": {
+                  "type": "string",
+                  "enum": ["ingest", "transcribe", "analyze", "score", "render", "publish"]
+                },
+                "status": {
+                  "$ref": "#/definitions/jobStatus"
+                },
+                "previousStatus": {
+                  "$ref": "#/definitions/jobStatus"
+                },
+                "progress": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "Job progress percentage"
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Human-readable status message"
+                },
+                "error": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
+                    }
+                  },
+                  "required": ["code", "message"]
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "processingTime": {
+                  "type": "number",
+                  "description": "Processing time in seconds"
+                }
+              },
+              "required": ["jobId", "jobType", "status"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    },
+
+    "systemHealthCheck": {
+      "allOf": [
+        {"$ref": "#/definitions/baseEvent"},
+        {
+          "type": "object",
+          "properties": {
+            "eventType": {
+              "type": "string",
+              "const": "system.health_check"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "service": {
+                  "type": "string",
+                  "enum": ["orchestrator", "ingest", "asr", "vision", "scoring", "render", "publisher", "web"]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["healthy", "degraded", "unhealthy"]
+                },
+                "uptime": {
+                  "type": "number",
+                  "description": "Service uptime in seconds"
+                },
+                "metrics": {
+                  "type": "object",
+                  "properties": {
+                    "cpuUsage": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "memoryUsage": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "diskUsage": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "queueSize": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "activeJobs": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              },
+              "required": ["service", "status", "uptime"]
+            }
+          },
+          "required": ["eventType", "data"]
+        }
+      ]
+    }
+  }
+}

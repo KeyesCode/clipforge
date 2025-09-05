@@ -1,0 +1,15 @@
+# Web framework & server
+fastapi>=0.110,<1
+pydantic>=2.5,<3
+uvicorn[standard]>=0.29,<1
+
+# Data & math
+numpy>=2.0,<3
+pandas>=2.2.2,<3
+
+# Redis (async API lives under redis.asyncio)
+redis>=5,<6
+
+# Config & structured logging
+PyYAML>=6,<7
+structlog>=24,<25
