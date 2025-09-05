@@ -12,7 +12,7 @@ import { StreamersModule } from './streamers/streamers.module';
 import { StreamsModule } from './streams/streams.module';
 import { ChunksModule } from './chunks/chunks.module';
 import { ClipsModule } from './clips/clips.module';
-// import { JobsModule } from './jobs/jobs.module';
+import { JobsModule } from './jobs/jobs.module';
 // import { QueueModule } from './queue/queue.module';
 
 // Database entities
@@ -20,7 +20,7 @@ import { Streamer } from './streamers/streamer.entity';
 import { Stream } from './streams/stream.entity';
 import { Chunk } from './chunks/chunk.entity';
 import { Clip } from './clips/clip.entity';
-// import { Job } from './jobs/job.entity';
+import { Job } from './jobs/job.entity';
 
 @Module({
   imports: [
@@ -40,7 +40,7 @@ import { Clip } from './clips/clip.entity';
         username: configService.get('DATABASE_USERNAME', 'clipforge'),
         password: configService.get('DATABASE_PASSWORD', 'clipforge'),
         database: configService.get('DATABASE_NAME', 'clipforge'),
-        entities: [Streamer, Stream, Chunk, Clip],
+        entities: [Streamer, Stream, Chunk, Clip, Job],
         synchronize: configService.get('NODE_ENV') === 'development',
         logging: configService.get('NODE_ENV') === 'development',
         migrations: ['dist/migrations/*.js'],
@@ -123,7 +123,7 @@ import { Clip } from './clips/clip.entity';
     StreamsModule,
     ChunksModule,
     ClipsModule,
-    // JobsModule,
+    JobsModule,
     // QueueModule,
   ],
   controllers: [],
