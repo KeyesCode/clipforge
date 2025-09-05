@@ -50,7 +50,7 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3000")
 STORAGE_PATH = Path(os.getenv("STORAGE_PATH", "./app/storage"))
 CHUNK_DURATION = int(os.getenv("CHUNK_DURATION", "300"))  # 5 minutes

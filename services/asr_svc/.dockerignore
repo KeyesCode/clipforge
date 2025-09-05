@@ -1,0 +1,102 @@
+# Git
+.git/
+.gitignore
+
+# Python cache and compiled files
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments (CRITICAL - these can be huge)
+venv/
+ENV/
+env/
+.venv/
+.env/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and temporary files
+*.log
+logs/
+temp/
+tmp/
+
+# Data directories (can contain large audio files)
+data/
+models/
+cache/
+outputs/
+downloads/
+
+# Large model files (Whisper models can be very large)
+*.bin
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.model
+*.onnx
+*.weights
+*.wav
+*.mp3
+*.mp4
+*.flac
+*.ogg
+
+# Documentation
+README.md
+docs/
+*.md
+LICENSE*
+
+# Test files
+tests/
+test_*
+*_test.py
+pytest.ini
+.coverage
+
+# Environment and config files
+.env.*
+!.env.example
+config.local.*
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
