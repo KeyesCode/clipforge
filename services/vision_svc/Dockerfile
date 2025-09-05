@@ -42,7 +42,7 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install Python dependencies with CPU PyTorch wheels
-RUN pip install --upgrade pip && \
+RUN pip install --upgrade pip wheel setuptools && \
     pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
 
 # Copy application code

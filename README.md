@@ -262,6 +262,8 @@ curl -X POST http://localhost:3001/api/streams \
 ### Local Development Setup
 
 1. **Install dependencies:**
+
+**Node.js Services:**
 ```bash
 # Orchestrator
 cd apps/orchestrator && npm install
@@ -271,13 +273,58 @@ cd apps/web && npm install
 
 # Publisher
 cd apps/publisher && npm install
+```
 
-# Python services
-cd services/ingest_svc && pip install -r requirements.txt
-cd services/asr_svc && pip install -r requirements.txt
-cd services/vision_svc && pip install -r requirements.txt
-cd services/scoring_svc && pip install -r requirements.txt
-cd services/render_svc && pip install -r requirements.txt
+**Python Services (with Virtual Environments):**
+```bash
+# Ingest Service
+cd services/ingest_svc
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# ASR Service
+cd services/asr_svc
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# Vision Service (may require additional system dependencies)
+cd services/vision_svc
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# Scoring Service
+cd services/scoring_svc
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# Render Service
+cd services/render_svc
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**⚠️ Important Notes:**
+- Always use virtual environments for Python services to avoid dependency conflicts
+- Some Python packages (like `insightface`, `opencv-python`) may require additional system dependencies
+- If you encounter SSL certificate errors, try: `pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org -r requirements.txt`
+- For complex dependencies, consider using Docker for development instead
+
+**🧹 If you installed packages globally:**
+If you previously installed Python packages globally (without virtual environments), you may want to clean them up:
+```bash
+# List globally installed packages
+pip list
+
+# Uninstall specific packages (be careful!)
+pip uninstall package_name
+
+# Or create a fresh Python environment
+# Consider using pyenv or conda for better Python version management
 ```
 
 2. **Start development servers:**
