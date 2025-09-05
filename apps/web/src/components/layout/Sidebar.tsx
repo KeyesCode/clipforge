@@ -10,6 +10,8 @@ import {
   FilmIcon,
   ClockIcon,
   CheckCircleIcon,
+  VideoCameraIcon,
+  UserGroupIcon,
 } from '@heroicons/react/24/outline';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
@@ -27,6 +29,8 @@ const navigation = [
   { name: 'All Clips', href: '/clips', icon: FilmIcon },
   { name: 'Highlights', href: '/clips/highlights', icon: PlayIcon },
   { name: 'Pending Review', href: '/clips/review', icon: EyeIcon },
+  { name: 'Streams', href: '/streams', icon: VideoCameraIcon },
+  { name: 'Streamers', href: '/streamers', icon: UserGroupIcon },
   { name: 'Analytics', href: '/analytics', icon: ChartBarIcon },
   { name: 'Settings', href: '/settings', icon: Cog6ToothIcon },
 ];
