@@ -6,6 +6,10 @@
 
 ClipForge is a comprehensive AI-powered video processing pipeline designed to automatically extract highlights from streaming VODs (Video on Demand), generate engaging clips with captions, and publish them to social media platforms. The system uses advanced machine learning techniques including speech recognition, computer vision, and multi-modal feature fusion to identify the most engaging moments in long-form content.
 
+![ClipForge Dashboard](assets/dashboard.png)
+
+*The ClipForge dashboard provides an intuitive interface for managing video clips, reviewing highlights, and monitoring the processing pipeline.*
+
 ## 🏗️ Architecture
 
 ClipForge follows a microservices architecture with the following components:
