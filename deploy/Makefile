@@ -219,7 +219,7 @@ check-gpu:
 quick-start: setup-env build up-detached db-migrate
 	@echo "ClipForge started successfully!"
 	@echo "Web UI: http://localhost:3000"
-	@echo "API Docs: http://localhost:3002/api/docs"
+	@echo "API Docs: http://localhost:3001/api/docs"
 
 quick-stop: down clean
 	@echo "ClipForge stopped and cleaned up"
