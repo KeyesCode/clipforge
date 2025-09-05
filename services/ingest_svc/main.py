@@ -52,7 +52,7 @@ logger = structlog.get_logger()
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3000")
-STORAGE_PATH = Path(os.getenv("STORAGE_PATH", "/app/storage"))
+STORAGE_PATH = Path(os.getenv("STORAGE_PATH", "./app/storage"))
 CHUNK_DURATION = int(os.getenv("CHUNK_DURATION", "300"))  # 5 minutes
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3"))
 SERVICE_NAME = "ingest_svc"

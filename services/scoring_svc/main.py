@@ -85,6 +85,7 @@ class ScoringService:
             self.redis_client = redis.Redis(
                 host=config['redis']['host'],
                 port=config['redis']['port'],
+                password=config['redis'].get('password'),
                 db=config['redis']['db'],
                 decode_responses=True
             )

@@ -56,8 +56,8 @@ SERVICE_PORT = int(os.getenv("ASR_SERVICE_PORT", "8002"))
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
-CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "/data/chunks")
-TRANSCRIPTION_STORAGE_PATH = os.getenv("TRANSCRIPTION_STORAGE_PATH", "/data/transcriptions")
+CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "./data/chunks")
+TRANSCRIPTION_STORAGE_PATH = os.getenv("TRANSCRIPTION_STORAGE_PATH", "./data/transcriptions")
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_ASR_JOBS", "2"))
 
 # Pydantic models

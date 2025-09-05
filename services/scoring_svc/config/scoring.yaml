@@ -10,8 +10,9 @@ service:
   
 # Redis Configuration
 redis:
-  host: "redis"
+  host: "localhost"
   port: 6379
+  password: "redis_secure_password_2024"
   db: 0
   queue_name: "scoring_queue"
   result_ttl: 3600  # 1 hour
