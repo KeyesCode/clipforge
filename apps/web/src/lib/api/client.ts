@@ -258,10 +258,19 @@ class ApiClient {
     title: string;
     description?: string;
   }): Promise<Stream> {
+    // Transform the data to match backend expectations
+    const streamData = {
+      streamerId: data.streamerId,
+      originalUrl: data.vodUrl, // Map vodUrl to originalUrl
+      title: data.title,
+      description: data.description,
+      // Platform will be derived from the streamer in the backend
+    };
+    
     return this.request<Stream>({
       method: 'POST',
       url: '/streams',
-      data,
+      data: streamData,
     });
   }
 

@@ -99,8 +99,8 @@ export class StreamsService {
 
   async create(createStreamDto: Partial<Stream>): Promise<Stream> {
     // Validate required fields
-    if (!createStreamDto.streamerId || !createStreamDto.title || !createStreamDto.originalUrl || !createStreamDto.platform) {
-      throw new BadRequestException('Missing required fields: streamerId, title, originalUrl, platform');
+    if (!createStreamDto.streamerId || !createStreamDto.title || !createStreamDto.originalUrl) {
+      throw new BadRequestException('Missing required fields: streamerId, title, originalUrl');
     }
 
     // Verify streamer exists
@@ -112,9 +112,10 @@ export class StreamsService {
       throw new NotFoundException(`Streamer with ID ${createStreamDto.streamerId} not found`);
     }
 
-    // Create stream with default values
+    // Create stream with default values and derive platform from streamer
     const stream = this.streamsRepository.create({
       ...createStreamDto,
+      platform: streamer.platform as any, // Derive platform from streamer
       status: StreamStatus.PENDING,
       createdAt: new Date(),
       updatedAt: new Date(),
