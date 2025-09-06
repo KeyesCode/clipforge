@@ -51,7 +51,7 @@ logger = structlog.get_logger()
 
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
-ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3000")
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
 STORAGE_PATH = Path(os.getenv("STORAGE_PATH", "./app/storage"))
 CHUNK_DURATION = int(os.getenv("CHUNK_DURATION", "300"))  # 5 minutes
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3"))
@@ -323,12 +323,14 @@ class IngestService:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(f"{ORCHESTRATOR_URL}/api/{endpoint}", json=data) as response:
-                    if response.status == 200:
-                        logger.info("Orchestrator notified", endpoint=endpoint)
+                    if response.status in [200, 201]:
+                        logger.info("Orchestrator notified", endpoint=endpoint, status=response.status)
                     else:
+                        error_text = await response.text()
                         logger.error("Failed to notify orchestrator", 
                                    endpoint=endpoint, 
-                                   status=response.status)
+                                   status=response.status,
+                                   error=error_text)
         except Exception as e:
             logger.error("Error notifying orchestrator", endpoint=endpoint, error=str(e))
 
@@ -402,10 +404,24 @@ class IngestService:
 
             # Notify orchestrator
             await self.notify_orchestrator("streams", {
-                "streamId": stream_id,
+                "title": stream_metadata.title,
+                "originalUrl": stream_metadata.original_url,
+                "platform": "youtube",  # TODO: Extract from URL or make configurable
                 "streamerId": request.streamer_id,
-                "metadata": stream_metadata.dict(),
-                "chunks": [chunk.dict() for chunk in chunks]
+                "status": "downloaded",
+                "duration": int(stream_metadata.duration),
+                "thumbnailUrl": stream_metadata.thumbnail_path,
+                "localVideoPath": stream_metadata.download_path,
+                "localThumbnailPath": stream_metadata.thumbnail_path,
+                "fileSize": stream_metadata.file_size,
+                "width": int(stream_metadata.resolution.split('x')[0]) if 'x' in stream_metadata.resolution else None,
+                "height": int(stream_metadata.resolution.split('x')[1]) if 'x' in stream_metadata.resolution else None,
+                "fps": stream_metadata.fps,
+                "streamDate": datetime.now(timezone.utc).isoformat(),
+                "metadata": {
+                    "chunks": [chunk.dict() for chunk in chunks],
+                    "chunkCount": len(chunks)
+                }
             })
 
             # Complete job
