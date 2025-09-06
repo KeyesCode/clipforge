@@ -51,13 +51,13 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Environment configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
 SERVICE_PORT = int(os.getenv("ASR_SERVICE_PORT", "8002"))
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
-WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
-CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "/data/chunks")
-TRANSCRIPTION_STORAGE_PATH = os.getenv("TRANSCRIPTION_STORAGE_PATH", "/data/transcriptions")
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "./data/chunks")
+TRANSCRIPTION_STORAGE_PATH = os.getenv("TRANSCRIPTION_STORAGE_PATH", "./data/transcriptions")
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_ASR_JOBS", "2"))
 
 # Pydantic models
@@ -129,23 +129,46 @@ def init_whisper():
     """Initialize Whisper model"""
     global whisper_model
     try:
-        # Determine device
+        # Determine device and compute type
         device = WHISPER_DEVICE
+        compute_type = WHISPER_COMPUTE_TYPE
+        
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Adjust compute type for CPU if necessary
+        if device == "cpu" and compute_type == "float16":
+            compute_type = "int8"
+            logger.info("Adjusted compute type to int8 for CPU device")
         
         logger.info("Initializing Whisper model", 
                    model_size=WHISPER_MODEL_SIZE, 
                    device=device,
-                   compute_type=WHISPER_COMPUTE_TYPE)
+                   compute_type=compute_type)
         
-        whisper_model = WhisperModel(
-            WHISPER_MODEL_SIZE, 
-            device=device, 
-            compute_type=WHISPER_COMPUTE_TYPE
-        )
+        # Try with the determined settings first
+        try:
+            whisper_model = WhisperModel(
+                WHISPER_MODEL_SIZE, 
+                device=device, 
+                compute_type=compute_type
+            )
+            logger.info("Whisper model loaded successfully", device=device, compute_type=compute_type)
+        except RuntimeError as cuda_error:
+            if "CUDA" in str(cuda_error) and device != "cpu":
+                logger.warning(f"CUDA error encountered, falling back to CPU: {cuda_error}")
+                # Force CPU with appropriate compute type
+                device = "cpu"
+                compute_type = "int8"
+                whisper_model = WhisperModel(
+                    WHISPER_MODEL_SIZE, 
+                    device=device, 
+                    compute_type=compute_type
+                )
+                logger.info("Whisper model loaded successfully on CPU fallback", device=device, compute_type=compute_type)
+            else:
+                raise
         
-        logger.info("Whisper model loaded successfully")
     except Exception as e:
         logger.error("Failed to load Whisper model", error=str(e))
         raise

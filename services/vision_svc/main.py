@@ -58,10 +58,10 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Environment configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
 SERVICE_PORT = int(os.getenv("VISION_SERVICE_PORT", "8003"))
-CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "/data/chunks")
-ANALYSIS_STORAGE_PATH = os.getenv("ANALYSIS_STORAGE_PATH", "/data/analysis")
+CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "./data/chunks")
+ANALYSIS_STORAGE_PATH = os.getenv("ANALYSIS_STORAGE_PATH", "./data/analysis")
 FACE_MODEL_NAME = os.getenv("FACE_MODEL_NAME", "buffalo_l")
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_VISION_JOBS", "2"))
 SCENE_THRESHOLD = float(os.getenv("SCENE_THRESHOLD", "30.0"))

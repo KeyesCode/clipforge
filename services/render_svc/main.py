@@ -52,10 +52,10 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Environment configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
 SERVICE_PORT = int(os.getenv("RENDER_SERVICE_PORT", "8004"))
-CLIPS_STORAGE_PATH = os.getenv("CLIPS_STORAGE_PATH", "/data/clips")
-TEMP_RENDER_PATH = os.getenv("TEMP_RENDER_PATH", "/tmp/render")
+CLIPS_STORAGE_PATH = os.getenv("CLIPS_STORAGE_PATH", "./data/clips")
+TEMP_RENDER_PATH = os.getenv("TEMP_RENDER_PATH", "./tmp/render")
 FONTS_PATH = os.getenv("FONTS_PATH", "/usr/share/fonts")
 MAX_CONCURRENT_RENDERS = int(os.getenv("MAX_CONCURRENT_RENDERS", "2"))
 DEFAULT_FONT_SIZE = int(os.getenv("DEFAULT_FONT_SIZE", "36"))
