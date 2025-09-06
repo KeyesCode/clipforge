@@ -81,9 +81,18 @@ export class ClipsController {
   @ApiQuery({ name: 'sortOrder', required: false, description: 'Sort order (asc/desc)' })
   @ApiQuery({ name: 'limit', required: false, description: 'Number of items to return' })
   @ApiQuery({ name: 'offset', required: false, description: 'Number of items to skip' })
-  async findAll(@Query() query: ClipQueryDto): Promise<ClipListResponse> {
+  async findAll(@Query() query: ClipQueryDto): Promise<{ data: Clip[]; total: number; limit: number; offset: number; hasNext: boolean; hasPrev: boolean }> {
     try {
-      return await this.clipsService.findAll(query);
+      const result = await this.clipsService.findAll(query);
+      
+      return {
+        data: result.clips,
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+        hasNext: result.offset + result.limit < result.total,
+        hasPrev: result.offset > 0
+      };
     } catch (error) {
       throw new HttpException(
         'Failed to retrieve clips: ' + (error as Error).message,
@@ -122,9 +131,18 @@ export class ClipsController {
     status: 200, 
     description: 'Highlights retrieved successfully',
   })
-  async getHighlights(@Query() query: ClipQueryDto): Promise<ClipListResponse> {
+  async getHighlights(@Query() query: ClipQueryDto): Promise<{ data: Clip[]; total: number; limit: number; offset: number; hasNext: boolean; hasPrev: boolean }> {
     try {
-      return await this.clipsService.getHighlights(query);
+      const result = await this.clipsService.getHighlights(query);
+      
+      return {
+        data: result.clips,
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+        hasNext: result.offset + result.limit < result.total,
+        hasPrev: result.offset > 0
+      };
     } catch (error) {
       throw new HttpException(
         'Failed to retrieve highlights: ' + (error as Error).message,
@@ -142,9 +160,18 @@ export class ClipsController {
     status: 200, 
     description: 'Pending review clips retrieved successfully',
   })
-  async getPendingReview(@Query() query: ClipQueryDto): Promise<ClipListResponse> {
+  async getPendingReview(@Query() query: ClipQueryDto): Promise<{ data: Clip[]; total: number; limit: number; offset: number; hasNext: boolean; hasPrev: boolean }> {
     try {
-      return await this.clipsService.getPendingReview(query);
+      const result = await this.clipsService.getPendingReview(query);
+      
+      return {
+        data: result.clips,
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+        hasNext: result.offset + result.limit < result.total,
+        hasPrev: result.offset > 0
+      };
     } catch (error) {
       throw new HttpException(
         'Failed to retrieve pending review clips: ' + (error as Error).message,
@@ -167,9 +194,18 @@ export class ClipsController {
   async getByStream(
     @Param('streamId', ParseUUIDPipe) streamId: string,
     @Query() query: ClipQueryDto,
-  ): Promise<ClipListResponse> {
+  ): Promise<{ data: Clip[]; total: number; limit: number; offset: number; hasNext: boolean; hasPrev: boolean }> {
     try {
-      return await this.clipsService.getByStream(streamId, query);
+      const result = await this.clipsService.getByStream(streamId, query);
+      
+      return {
+        data: result.clips,
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+        hasNext: result.offset + result.limit < result.total,
+        hasPrev: result.offset > 0
+      };
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
