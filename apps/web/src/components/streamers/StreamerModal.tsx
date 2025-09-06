@@ -20,9 +20,12 @@ const platformOptions = [
 
 export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
   const [formData, setFormData] = useState({
-    name: '',
+    username: '',
+    displayName: '',
     platform: '',
-    channelUrl: '',
+    platformId: '',
+    avatarUrl: '',
+    description: '',
     isActive: true,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -34,9 +37,12 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
   useEffect(() => {
     if (streamer) {
       setFormData({
-        name: streamer.name,
-        platform: streamer.platform,
-        channelUrl: streamer.channelUrl,
+        username: streamer.username,
+        displayName: streamer.displayName,
+        platform: streamer.platform || '',
+        platformId: streamer.platformId || '',
+        avatarUrl: streamer.avatarUrl || '',
+        description: streamer.description || '',
         isActive: streamer.isActive,
       });
     }
@@ -45,18 +51,16 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
   const validate = () => {
     const newErrors: Record<string, string> = {};
 
-    if (!formData.name.trim()) {
-      newErrors.name = 'Name is required';
+    if (!formData.username.trim()) {
+      newErrors.username = 'Username is required';
     }
 
-    if (!formData.channelUrl) {
-      newErrors.channelUrl = 'Channel URL is required';
-    } else if (!isValidUrl(formData.channelUrl)) {
-      newErrors.channelUrl = 'Please enter a valid URL';
+    if (!formData.displayName.trim()) {
+      newErrors.displayName = 'Display name is required';
     }
 
-    if (!formData.platform) {
-      newErrors.platform = 'Please select a platform';
+    if (formData.avatarUrl && !isValidUrl(formData.avatarUrl)) {
+      newErrors.avatarUrl = 'Please enter a valid URL';
     }
 
     setErrors(newErrors);
@@ -70,9 +74,12 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
 
     try {
       const data = {
-        name: formData.name.trim(),
-        platform: formData.platform as 'twitch' | 'youtube' | 'kick' | 'other',
-        channelUrl: formData.channelUrl,
+        username: formData.username.trim(),
+        displayName: formData.displayName.trim(),
+        platform: formData.platform || undefined,
+        platformId: formData.platformId || undefined,
+        avatarUrl: formData.avatarUrl || undefined,
+        description: formData.description || undefined,
         ...(isEditing && { isActive: formData.isActive }),
       };
 
@@ -149,43 +156,43 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
                     </Dialog.Title>
 
                     <form onSubmit={handleSubmit} className="space-y-4">
-                      {/* Name */}
+                      {/* Username */}
                       <div>
-                        <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
-                          Streamer Name
+                        <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">
+                          Username *
                         </label>
                         <input
                           type="text"
-                          id="name"
-                          value={formData.name}
-                          onChange={(e) => handleChange('name', e.target.value)}
-                          placeholder="Enter streamer name"
+                          id="username"
+                          value={formData.username}
+                          onChange={(e) => handleChange('username', e.target.value)}
+                          placeholder="Enter unique username"
                           className={`block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm ${
-                            errors.name ? 'border-red-300' : 'border-gray-300'
+                            errors.username ? 'border-red-300' : 'border-gray-300'
                           }`}
                         />
-                        {errors.name && (
-                          <p className="mt-1 text-sm text-red-600">{errors.name}</p>
+                        {errors.username && (
+                          <p className="mt-1 text-sm text-red-600">{errors.username}</p>
                         )}
                       </div>
 
-                      {/* Channel URL */}
+                      {/* Display Name */}
                       <div>
-                        <label htmlFor="channelUrl" className="block text-sm font-medium text-gray-700 mb-1">
-                          Channel URL
+                        <label htmlFor="displayName" className="block text-sm font-medium text-gray-700 mb-1">
+                          Display Name *
                         </label>
                         <input
-                          type="url"
-                          id="channelUrl"
-                          value={formData.channelUrl}
-                          onChange={(e) => handleChange('channelUrl', e.target.value)}
-                          placeholder="https://..."
+                          type="text"
+                          id="displayName"
+                          value={formData.displayName}
+                          onChange={(e) => handleChange('displayName', e.target.value)}
+                          placeholder="Enter display name"
                           className={`block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm ${
-                            errors.channelUrl ? 'border-red-300' : 'border-gray-300'
+                            errors.displayName ? 'border-red-300' : 'border-gray-300'
                           }`}
                         />
-                        {errors.channelUrl && (
-                          <p className="mt-1 text-sm text-red-600">{errors.channelUrl}</p>
+                        {errors.displayName && (
+                          <p className="mt-1 text-sm text-red-600">{errors.displayName}</p>
                         )}
                       </div>
 
@@ -212,6 +219,59 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
                         {errors.platform && (
                           <p className="mt-1 text-sm text-red-600">{errors.platform}</p>
                         )}
+                      </div>
+
+                      {/* Platform ID */}
+                      <div>
+                        <label htmlFor="platformId" className="block text-sm font-medium text-gray-700 mb-1">
+                          Platform ID
+                        </label>
+                        <input
+                          type="text"
+                          id="platformId"
+                          value={formData.platformId}
+                          onChange={(e) => handleChange('platformId', e.target.value)}
+                          placeholder="Platform-specific user ID"
+                          className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                        />
+                        <p className="mt-1 text-xs text-gray-500">
+                          Optional: Platform-specific user ID for API integration
+                        </p>
+                      </div>
+
+                      {/* Avatar URL */}
+                      <div>
+                        <label htmlFor="avatarUrl" className="block text-sm font-medium text-gray-700 mb-1">
+                          Avatar URL
+                        </label>
+                        <input
+                          type="url"
+                          id="avatarUrl"
+                          value={formData.avatarUrl}
+                          onChange={(e) => handleChange('avatarUrl', e.target.value)}
+                          placeholder="https://..."
+                          className={`block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm ${
+                            errors.avatarUrl ? 'border-red-300' : 'border-gray-300'
+                          }`}
+                        />
+                        {errors.avatarUrl && (
+                          <p className="mt-1 text-sm text-red-600">{errors.avatarUrl}</p>
+                        )}
+                      </div>
+
+                      {/* Description */}
+                      <div>
+                        <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">
+                          Description
+                        </label>
+                        <textarea
+                          id="description"
+                          value={formData.description}
+                          onChange={(e) => handleChange('description', e.target.value)}
+                          placeholder="Enter streamer description"
+                          rows={3}
+                          className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                        />
                       </div>
 
                       {/* Active Status (only when editing) */}

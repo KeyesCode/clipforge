@@ -79,7 +79,7 @@ export function StreamCard({ stream, onView, onDelete }: StreamCardProps) {
           
           {stream.streamer && (
             <span className="text-xs text-gray-500">
-              {stream.streamer.name}
+              {stream.streamer.displayName}
             </span>
           )}
         </div>

@@ -129,7 +129,7 @@ export function CreateStreamModal({ onClose }: CreateStreamModalProps) {
                           <option value="">Select a streamer</option>
                           {streamers.map((streamer) => (
                             <option key={streamer.id} value={streamer.id}>
-                              {streamer.name} ({streamer.platform})
+                              {streamer.displayName} ({streamer.platform})
                             </option>
                           ))}
                         </select>
