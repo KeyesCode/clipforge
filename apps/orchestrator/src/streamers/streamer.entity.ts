@@ -29,12 +29,12 @@ export class Streamer {
 
   @Column('json', { nullable: true })
   settings: {
-    autoIngest?: boolean;
-    clipDuration?: number;
-    preferredAspectRatio?: string;
-    captionStyle?: string;
-    publishingEnabled?: boolean;
-    platforms?: string[];
+    auto_clip?: boolean;
+    min_clip_duration?: number;
+    max_clip_duration?: number;
+    highlight_threshold?: number;
+    preferred_aspect_ratios?: string[];
+    auto_publish?: boolean;
   };
 
   @Column('json', { nullable: true })

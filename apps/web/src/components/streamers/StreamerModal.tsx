@@ -11,6 +11,24 @@ interface StreamerModalProps {
   onClose: () => void;
 }
 
+interface StreamerFormData {
+  username: string;
+  displayName: string;
+  platform: string;
+  platformId: string;
+  avatarUrl: string;
+  description: string;
+  isActive: boolean;
+  settings: {
+    auto_clip: boolean;
+    min_clip_duration: number;
+    max_clip_duration: number;
+    highlight_threshold: number;
+    preferred_aspect_ratios: string[];
+    auto_publish: boolean;
+  };
+}
+
 const platformOptions = [
   { value: 'twitch', label: 'Twitch' },
   { value: 'youtube', label: 'YouTube' },
@@ -19,7 +37,7 @@ const platformOptions = [
 ];
 
 export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<StreamerFormData>({
     username: '',
     displayName: '',
     platform: '',
@@ -27,6 +45,14 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
     avatarUrl: '',
     description: '',
     isActive: true,
+    settings: {
+      auto_clip: true,
+      min_clip_duration: 30,
+      max_clip_duration: 90,
+      highlight_threshold: 0.6,
+      preferred_aspect_ratios: ['9:16', '1:1'],
+      auto_publish: true,
+    },
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -44,6 +70,14 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
         avatarUrl: streamer.avatarUrl || '',
         description: streamer.description || '',
         isActive: streamer.isActive,
+        settings: {
+          auto_clip: streamer.settings?.auto_clip ?? true,
+          min_clip_duration: streamer.settings?.min_clip_duration ?? 30,
+          max_clip_duration: streamer.settings?.max_clip_duration ?? 90,
+          highlight_threshold: streamer.settings?.highlight_threshold ?? 0.6,
+          preferred_aspect_ratios: streamer.settings?.preferred_aspect_ratios ?? ['9:16', '1:1'],
+          auto_publish: streamer.settings?.auto_publish ?? true,
+        },
       });
     }
   }, [streamer]);
@@ -63,6 +97,27 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
       newErrors.avatarUrl = 'Please enter a valid URL';
     }
 
+    // Settings validation
+    if (formData.settings.min_clip_duration < 5) {
+      newErrors.min_clip_duration = 'Minimum clip duration must be at least 5 seconds';
+    }
+
+    if (formData.settings.max_clip_duration > 300) {
+      newErrors.max_clip_duration = 'Maximum clip duration cannot exceed 300 seconds';
+    }
+
+    if (formData.settings.min_clip_duration >= formData.settings.max_clip_duration) {
+      newErrors.max_clip_duration = 'Maximum duration must be greater than minimum duration';
+    }
+
+    if (formData.settings.highlight_threshold < 0 || formData.settings.highlight_threshold > 1) {
+      newErrors.highlight_threshold = 'Highlight threshold must be between 0 and 1';
+    }
+
+    if (formData.settings.preferred_aspect_ratios.length === 0) {
+      newErrors.preferred_aspect_ratios = 'At least one aspect ratio must be selected';
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -80,6 +135,7 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
         platformId: formData.platformId || undefined,
         avatarUrl: formData.avatarUrl || undefined,
         description: formData.description || undefined,
+        settings: formData.settings,
         ...(isEditing && { isActive: formData.isActive }),
       };
 
@@ -95,14 +151,25 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
     }
   };
 
-  const handleChange = (field: string, value: string | boolean) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    
-    // Auto-detect platform from URL
-    if (field === 'channelUrl' && typeof value === 'string') {
-      const detectedPlatform = extractPlatform(value);
-      if (detectedPlatform !== 'other') {
-        setFormData(prev => ({ ...prev, platform: detectedPlatform }));
+  const handleChange = (field: string, value: string | boolean | number | string[]) => {
+    if (field.startsWith('settings.')) {
+      const settingField = field.replace('settings.', '');
+      setFormData(prev => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          [settingField]: value,
+        },
+      }));
+    } else {
+      setFormData(prev => ({ ...prev, [field]: value }));
+      
+      // Auto-detect platform from URL
+      if (field === 'channelUrl' && typeof value === 'string') {
+        const detectedPlatform = extractPlatform(value);
+        if (detectedPlatform !== 'other') {
+          setFormData(prev => ({ ...prev, platform: detectedPlatform }));
+        }
       }
     }
     
@@ -137,7 +204,7 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
               leaveFrom="opacity-100 translate-y-0 sm:scale-100"
               leaveTo="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
             >
-              <Dialog.Panel className="relative transform overflow-hidden rounded-lg bg-white px-4 pb-4 pt-5 text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6">
+              <Dialog.Panel className="relative transform overflow-hidden rounded-lg bg-white px-4 pb-4 pt-5 text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-2xl sm:p-6">
                 <div className="absolute right-0 top-0 pr-4 pt-4">
                   <button
                     type="button"
@@ -272,6 +339,142 @@ export function StreamerModal({ streamer, onClose }: StreamerModalProps) {
                           rows={3}
                           className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                         />
+                      </div>
+
+                      {/* Settings Section */}
+                      <div className="border-t pt-6">
+                        <h4 className="text-lg font-medium text-gray-900 mb-4">Clip Settings</h4>
+                        
+                        {/* Auto Clip */}
+                        <div className="mb-4">
+                          <label className="flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={formData.settings.auto_clip}
+                              onChange={(e) => handleChange('settings.auto_clip', e.target.checked)}
+                              className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                            />
+                            <span className="ml-2 text-sm text-gray-700">Enable automatic clip generation</span>
+                          </label>
+                          <p className="mt-1 text-xs text-gray-500">
+                            Automatically generate clips from streams based on highlight detection
+                          </p>
+                        </div>
+
+                        {/* Clip Duration Range */}
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                          <div>
+                            <label htmlFor="min_clip_duration" className="block text-sm font-medium text-gray-700 mb-1">
+                              Min Duration (seconds)
+                            </label>
+                            <input
+                              type="number"
+                              id="min_clip_duration"
+                              min="5"
+                              max="300"
+                              value={formData.settings.min_clip_duration}
+                              onChange={(e) => handleChange('settings.min_clip_duration', parseInt(e.target.value) || 5)}
+                              className={`block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm ${
+                                errors.min_clip_duration ? 'border-red-300' : 'border-gray-300'
+                              }`}
+                            />
+                            {errors.min_clip_duration && (
+                              <p className="mt-1 text-sm text-red-600">{errors.min_clip_duration}</p>
+                            )}
+                          </div>
+                          <div>
+                            <label htmlFor="max_clip_duration" className="block text-sm font-medium text-gray-700 mb-1">
+                              Max Duration (seconds)
+                            </label>
+                            <input
+                              type="number"
+                              id="max_clip_duration"
+                              min="5"
+                              max="300"
+                              value={formData.settings.max_clip_duration}
+                              onChange={(e) => handleChange('settings.max_clip_duration', parseInt(e.target.value) || 90)}
+                              className={`block w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm ${
+                                errors.max_clip_duration ? 'border-red-300' : 'border-gray-300'
+                              }`}
+                            />
+                            {errors.max_clip_duration && (
+                              <p className="mt-1 text-sm text-red-600">{errors.max_clip_duration}</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Highlight Threshold */}
+                        <div className="mb-4">
+                          <label htmlFor="highlight_threshold" className="block text-sm font-medium text-gray-700 mb-1">
+                            Highlight Threshold
+                          </label>
+                          <input
+                            type="range"
+                            id="highlight_threshold"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={formData.settings.highlight_threshold}
+                            onChange={(e) => handleChange('settings.highlight_threshold', parseFloat(e.target.value))}
+                            className="block w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                          />
+                          <div className="flex justify-between text-xs text-gray-500 mt-1">
+                            <span>0.0 (Low)</span>
+                            <span className="font-medium">{formData.settings.highlight_threshold}</span>
+                            <span>1.0 (High)</span>
+                          </div>
+                          {errors.highlight_threshold && (
+                            <p className="mt-1 text-sm text-red-600">{errors.highlight_threshold}</p>
+                          )}
+                        </div>
+
+                        {/* Preferred Aspect Ratios */}
+                        <div className="mb-4">
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Preferred Aspect Ratios
+                          </label>
+                          <div className="space-y-2">
+                            {[
+                              { value: '9:16', label: '9:16 (Vertical)' },
+                              { value: '1:1', label: '1:1 (Square)' },
+                              { value: '16:9', label: '16:9 (Horizontal)' },
+                            ].map((ratio) => (
+                              <label key={ratio.value} className="flex items-center">
+                                <input
+                                  type="checkbox"
+                                  checked={formData.settings.preferred_aspect_ratios.includes(ratio.value)}
+                                  onChange={(e) => {
+                                    const newRatios = e.target.checked
+                                      ? [...formData.settings.preferred_aspect_ratios, ratio.value]
+                                      : formData.settings.preferred_aspect_ratios.filter(r => r !== ratio.value);
+                                    handleChange('settings.preferred_aspect_ratios', newRatios);
+                                  }}
+                                  className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                                />
+                                <span className="ml-2 text-sm text-gray-700">{ratio.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                          {errors.preferred_aspect_ratios && (
+                            <p className="mt-1 text-sm text-red-600">{errors.preferred_aspect_ratios}</p>
+                          )}
+                        </div>
+
+                        {/* Auto Publish */}
+                        <div className="mb-4">
+                          <label className="flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={formData.settings.auto_publish}
+                              onChange={(e) => handleChange('settings.auto_publish', e.target.checked)}
+                              className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                            />
+                            <span className="ml-2 text-sm text-gray-700">Enable automatic publishing</span>
+                          </label>
+                          <p className="mt-1 text-xs text-gray-500">
+                            Automatically publish approved clips to configured platforms
+                          </p>
+                        </div>
                       </div>
 
                       {/* Active Status (only when editing) */}
