@@ -254,6 +254,12 @@ class IngestService:
                 # Find thumbnail
                 thumbnail_files = list(download_dir.glob('*.jpg')) + list(download_dir.glob('*.png')) + list(download_dir.glob('*.webp'))
                 thumbnail_path = str(thumbnail_files[0]) if thumbnail_files else None
+                
+                # Convert local thumbnail path to public URL
+                thumbnail_url = None
+                if thumbnail_path:
+                    # Convert /app/storage/downloads/stream_id/filename.webp to /storage/downloads/stream_id/filename.webp
+                    thumbnail_url = thumbnail_path.replace('/app/storage', '/storage')
 
                 metadata = StreamMetadata(
                     stream_id=stream_id,
@@ -502,7 +508,7 @@ class IngestService:
                 "platform": "youtube",  # TODO: Extract from URL or make configurable
                 "status": "downloaded",
                 "duration": int(stream_metadata.duration),
-                "thumbnailUrl": stream_metadata.thumbnail_path,
+                "thumbnailUrl": thumbnail_url,
                 "localVideoPath": stream_metadata.download_path,
                 "localThumbnailPath": stream_metadata.thumbnail_path,
                 "fileSize": stream_metadata.file_size,

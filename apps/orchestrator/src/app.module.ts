@@ -117,6 +117,10 @@ import { Queue } from './queue/queue.entity';
           rootPath: configService.get('UPLOAD_PATH', './uploads'),
           serveRoot: '/uploads',
         },
+        {
+          rootPath: configService.get('STORAGE_PATH', './storage'),
+          serveRoot: '/storage',
+        },
       ],
       inject: [ConfigService],
     }),
