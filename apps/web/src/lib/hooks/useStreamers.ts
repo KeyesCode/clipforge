@@ -47,15 +47,11 @@ export function useCreateStreamer() {
   const queryClient = useQueryClient();
   
   return useMutation(
-    (data: {
-      name: string;
-      platform: string;
-      channelUrl: string;
-    }) => apiClient.createStreamer(data),
+    (data: Partial<Streamer>) => apiClient.createStreamer(data),
     {
       onSuccess: (streamer) => {
         queryClient.invalidateQueries(STREAMERS_QUERY_KEYS.all);
-        toast.success(`Streamer "${streamer.name}" added successfully`);
+        toast.success(`Streamer "${streamer.displayName}" added successfully`);
       },
       onError: (error: Error) => {
         toast.error(`Failed to create streamer: ${error.message}`);
@@ -73,7 +69,7 @@ export function useUpdateStreamer() {
       onSuccess: (streamer) => {
         queryClient.invalidateQueries(STREAMERS_QUERY_KEYS.detail(streamer.id));
         queryClient.invalidateQueries(STREAMERS_QUERY_KEYS.lists());
-        toast.success(`Streamer "${streamer.name}" updated successfully`);
+        toast.success(`Streamer "${streamer.displayName}" updated successfully`);
       },
       onError: (error: Error) => {
         toast.error(`Failed to update streamer: ${error.message}`);

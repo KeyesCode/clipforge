@@ -1,4 +1,4 @@
-import { IsOptional, IsEnum, IsUUID, IsInt, Min, Max, IsDateString } from 'class-validator';
+import { IsOptional, IsEnum, IsUUID, IsInt, Min, Max, IsDateString, IsString } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { JobType, JobStatus } from '../job.entity';
 

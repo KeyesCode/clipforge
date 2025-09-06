@@ -58,10 +58,10 @@ export class Job {
   result: Record<string, any>;
 
   @Column({ type: 'text', nullable: true })
-  errorMessage: string;
+  errorMessage: string | null;
 
   @Column({ type: 'text', nullable: true })
-  errorStack: string;
+  errorStack: string | null;
 
   @Column({ type: 'int', default: 0 })
   retryCount: number;
@@ -70,10 +70,10 @@ export class Job {
   maxRetries: number;
 
   @Column({ type: 'timestamp', nullable: true })
-  startedAt: Date;
+  startedAt: Date | null;
 
   @Column({ type: 'timestamp', nullable: true })
-  completedAt: Date;
+  completedAt: Date | null;
 
   @Column({ type: 'timestamp', nullable: true })
   scheduledFor: Date;
@@ -85,7 +85,7 @@ export class Job {
   progress: number;
 
   @Column({ type: 'text', nullable: true })
-  progressMessage: string;
+  progressMessage: string | null;
 
   // Foreign key relationships
   @Column({ type: 'uuid', nullable: true })

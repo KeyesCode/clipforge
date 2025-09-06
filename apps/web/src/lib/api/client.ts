@@ -274,11 +274,10 @@ class ApiClient {
 
   // Streamers API
   async getStreamers(): Promise<Streamer[]> {
-    const response = await this.request<{ streamers: Streamer[] }>({
+    return this.request<Streamer[]>({
       method: 'GET',
       url: '/streamers',
     });
-    return response.streamers;
   }
 
   async getStreamer(id: string): Promise<Streamer> {
@@ -288,11 +287,7 @@ class ApiClient {
     });
   }
 
-  async createStreamer(data: {
-    name: string;
-    platform: string;
-    channelUrl: string;
-  }): Promise<Streamer> {
+  async createStreamer(data: Partial<Streamer>): Promise<Streamer> {
     return this.request<Streamer>({
       method: 'POST',
       url: '/streamers',

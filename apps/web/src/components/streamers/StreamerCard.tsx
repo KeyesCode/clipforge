@@ -50,7 +50,7 @@ export function StreamerCard({ streamer, onEdit, onDelete, onViewStreams }: Stre
               <img
                 className="h-12 w-12 rounded-full"
                 src={streamer.avatarUrl}
-                alt={streamer.name}
+                alt={streamer.displayName}
               />
             ) : (
               <UserCircleIcon className="h-12 w-12 text-gray-400" />
@@ -62,8 +62,11 @@ export function StreamerCard({ streamer, onEdit, onDelete, onViewStreams }: Stre
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-medium text-gray-900">
-                  {streamer.name}
+                  {streamer.displayName}
                 </h3>
+                <p className="text-sm text-gray-500">
+                  @{streamer.username}
+                </p>
                 <div className="flex items-center mt-1">
                   <span className={cn(
                     'inline-flex items-center px-2 py-1 rounded-full text-xs font-medium capitalize',
@@ -126,22 +129,24 @@ export function StreamerCard({ streamer, onEdit, onDelete, onViewStreams }: Stre
                       </Menu.Item>
                     )}
                     
-                    <Menu.Item>
-                      {({ active }) => (
-                        <a
-                          href={streamer.channelUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={cn(
-                            active ? 'bg-gray-50' : '',
-                            'flex w-full items-center px-4 py-2 text-sm text-gray-700'
-                          )}
-                        >
-                          <EyeIcon className="mr-3 h-4 w-4" />
-                          View Channel
-                        </a>
-                      )}
-                    </Menu.Item>
+                    {streamer.platform && (
+                      <Menu.Item>
+                        {({ active }) => (
+                          <a
+                            href={`https://${streamer.platform}.com/${streamer.username}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={cn(
+                              active ? 'bg-gray-50' : '',
+                              'flex w-full items-center px-4 py-2 text-sm text-gray-700'
+                            )}
+                          >
+                            <EyeIcon className="mr-3 h-4 w-4" />
+                            View Channel
+                          </a>
+                        )}
+                      </Menu.Item>
+                    )}
                     
                     {onEdit && (
                       <Menu.Item>
@@ -187,13 +192,13 @@ export function StreamerCard({ streamer, onEdit, onDelete, onViewStreams }: Stre
         <div className="mt-6 grid grid-cols-2 gap-4">
           <div className="text-center">
             <div className="text-2xl font-bold text-gray-900">
-              {formatNumber(streamer.totalStreams)}
+              {formatNumber(streamer.metadata?.totalStreams || 0)}
             </div>
             <div className="text-sm text-gray-500">Streams</div>
           </div>
           <div className="text-center">
             <div className="text-2xl font-bold text-gray-900">
-              {formatNumber(streamer.totalClips)}
+              {formatNumber(streamer.metadata?.totalClips || 0)}
             </div>
             <div className="text-sm text-gray-500">Clips</div>
           </div>
