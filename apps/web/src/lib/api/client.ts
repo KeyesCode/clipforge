@@ -281,6 +281,20 @@ class ApiClient {
     });
   }
 
+  async ingestStream(id: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>({
+      method: 'POST',
+      url: `/streams/${id}/ingest`,
+    });
+  }
+
+  async processStream(id: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>({
+      method: 'POST',
+      url: `/streams/${id}/process`,
+    });
+  }
+
   // Streamers API
   async getStreamers(): Promise<Streamer[]> {
     return this.request<Streamer[]>({

@@ -163,6 +163,39 @@ export class StreamsController {
     }
   }
 
+  @Post(':id/complete-ingestion')
+  async completeIngestion(
+    @Param('id') id: string,
+    @Body() ingestionData: {
+      title: string;
+      originalUrl: string;
+      platform: string;
+      status: string;
+      duration: number;
+      thumbnailUrl?: string;
+      localVideoPath?: string;
+      localThumbnailPath?: string;
+      fileSize?: number;
+      width?: number;
+      height?: number;
+      fps?: number;
+      streamDate?: string;
+      metadata?: {
+        chunks: any[];
+        chunkCount: number;
+      };
+    }
+  ): Promise<{ message: string }> {
+    try {
+      return await this.streamsService.completeIngestion(id, ingestionData);
+    } catch (error) {
+      throw new HttpException(
+        'Failed to complete stream ingestion',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+  }
+
   @Get(':id/clips')
   async getStreamClips(
     @Param('id') id: string,

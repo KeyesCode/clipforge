@@ -63,6 +63,7 @@ STORAGE_PATH.mkdir(parents=True, exist_ok=True)
 # Pydantic models
 class StreamIngestRequest(BaseModel):
     stream_url: str = Field(..., description="URL of the stream/VOD to ingest")
+    stream_id: Optional[str] = Field(None, description="ID of the stream to update")
     streamer_id: str = Field(..., description="ID of the streamer")
     stream_title: Optional[str] = Field(None, description="Title of the stream")
     stream_date: Optional[datetime] = Field(None, description="Date of the stream")
@@ -336,7 +337,8 @@ class IngestService:
 
     async def process_ingest_job(self, request: StreamIngestRequest, correlation_id: str):
         """Process complete ingestion job"""
-        stream_id = str(uuid.uuid4())
+        # Use the provided stream_id if available, otherwise generate a new one
+        stream_id = getattr(request, 'stream_id', None) or str(uuid.uuid4())
         
         try:
             # Update job status
@@ -402,12 +404,11 @@ class IngestService:
                 "chunks": chunks_data
             }, correlation_id)
 
-            # Notify orchestrator
-            await self.notify_orchestrator("streams", {
+            # Notify orchestrator to complete ingestion
+            await self.notify_orchestrator(f"streams/{stream_id}/complete-ingestion", {
                 "title": stream_metadata.title,
                 "originalUrl": stream_metadata.original_url,
                 "platform": "youtube",  # TODO: Extract from URL or make configurable
-                "streamerId": request.streamer_id,
                 "status": "downloaded",
                 "duration": int(stream_metadata.duration),
                 "thumbnailUrl": stream_metadata.thumbnail_path,

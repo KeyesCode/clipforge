@@ -1,13 +1,18 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
+import { HttpModule } from '@nestjs/axios';
 import { Queue } from './queue.entity';
 import { QueueService } from './queue.service';
 import { QueueController } from './queue.controller';
+import { IngestQueueProcessor, ProcessingQueueProcessor } from './queue.processor';
+import { Job } from '../jobs/job.entity';
+import { Stream } from '../streams/stream.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Queue]),
+    TypeOrmModule.forFeature([Queue, Job, Stream]),
+    HttpModule,
     BullModule.registerQueue(
       { name: 'ingest' },
       { name: 'transcribe' },
@@ -16,10 +21,11 @@ import { QueueController } from './queue.controller';
       { name: 'render' },
       { name: 'publish' },
       { name: 'notification' },
+      { name: 'processing' },
     ),
   ],
   controllers: [QueueController],
-  providers: [QueueService],
+  providers: [QueueService, IngestQueueProcessor, ProcessingQueueProcessor],
   exports: [QueueService],
 })
 export class QueueModule {}

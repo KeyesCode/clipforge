@@ -17,6 +17,7 @@ export function useStreams(filters?: {
   platform?: string;
   status?: string;
   streamerId?: string;
+  search?: string;
   limit?: number;
   offset?: number;
 }) {
@@ -83,6 +84,40 @@ export function useDeleteStream() {
       },
       onError: (error: Error) => {
         toast.error(`Failed to delete stream: ${error.message}`);
+      },
+    }
+  );
+}
+
+export function useIngestStream() {
+  const queryClient = useQueryClient();
+  
+  return useMutation(
+    (id: string) => apiClient.ingestStream(id),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(STREAMS_QUERY_KEYS.all);
+        toast.success('Stream ingestion started successfully');
+      },
+      onError: (error: Error) => {
+        toast.error(`Failed to start ingestion: ${error.message}`);
+      },
+    }
+  );
+}
+
+export function useProcessStream() {
+  const queryClient = useQueryClient();
+  
+  return useMutation(
+    (id: string) => apiClient.processStream(id),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(STREAMS_QUERY_KEYS.all);
+        toast.success('Stream processing started successfully');
+      },
+      onError: (error: Error) => {
+        toast.error(`Failed to start processing: ${error.message}`);
       },
     }
   );

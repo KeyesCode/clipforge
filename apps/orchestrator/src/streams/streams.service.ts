@@ -24,7 +24,11 @@ export class StreamsService {
     private ingestQueue: Queue,
     @InjectQueue('processing')
     private processingQueue: Queue,
-  ) {}
+  ) {
+    console.log('[StreamsService] Constructor called');
+    console.log('[StreamsService] Ingest queue:', this.ingestQueue ? 'injected' : 'NOT INJECTED');
+    console.log('[StreamsService] Processing queue:', this.processingQueue ? 'injected' : 'NOT INJECTED');
+  }
 
   private toStreamStatus(value: string): StreamStatus {
     switch ((value || '').toLowerCase()) {
@@ -150,57 +154,92 @@ export class StreamsService {
   }
 
   async ingestStream(id: string): Promise<{ message: string }> {
-    const stream = await this.findOne(id);
+    console.log(`[StreamsService] Starting ingestion for stream ${id}`);
+    
+    try {
+      // Test queue availability first
+      if (!this.ingestQueue) {
+        console.error(`[StreamsService] Ingest queue is not available!`);
+        throw new BadRequestException('Queue system not available');
+      }
 
-    if (stream.status !== 'pending') {
-      throw new BadRequestException(`Stream status must be 'pending' to start ingestion. Current status: ${stream.status}`);
+      const stream = await this.findOne(id);
+      console.log(`[StreamsService] Found stream: ${stream.id}, status: ${stream.status}`);
+
+      if (stream.status !== 'pending') {
+        console.log(`[StreamsService] Stream status is not pending: ${stream.status}`);
+        throw new BadRequestException(`Stream status must be 'pending' to start ingestion. Current status: ${stream.status}`);
+      }
+
+      console.log(`[StreamsService] Updating stream status to downloading...`);
+      // Update status to downloading
+      await this.update(id, { status: StreamStatus.DOWNLOADING });
+      console.log(`[StreamsService] Stream status updated to downloading`);
+
+      console.log(`[StreamsService] Adding job to ingest queue...`);
+      console.log(`[StreamsService] Queue object:`, this.ingestQueue);
+      console.log(`[StreamsService] Job data:`, {
+        streamId: id,
+        url: stream.originalUrl,
+        platform: stream.platform,
+        streamerName: stream.streamer?.displayName ?? stream.streamer?.username ?? 'unknown'
+      });
+
+      // Add job to ingest queue
+      const job = await this.ingestQueue.add('download-stream', {
+        streamId: id,
+        url: stream.originalUrl,
+        platform: stream.platform,
+        streamerName: stream.streamer?.displayName ?? stream.streamer?.username ?? 'unknown'
+      }, {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+      });
+
+      console.log(`[StreamsService] Job added successfully:`, job.id);
+      return { message: `Stream ingestion started for ${id}` };
+    } catch (error) {
+      console.error(`[StreamsService] Error in ingestStream:`, error);
+      throw error;
     }
-
-    // Update status to downloading
-    await this.update(id, { status: StreamStatus.DOWNLOADING });
-
-    // Add job to ingest queue
-    await this.ingestQueue.add('download-stream', {
-      streamId: id,
-      url: stream.originalUrl,
-      platform: stream.platform,
-      streamerName: stream.streamer?.displayName ?? stream.streamer?.username ?? 'unknown'
-
-    }, {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 5000,
-      },
-    });
-
-    return { message: `Stream ingestion started for ${id}` };
   }
 
   async processStream(id: string): Promise<{ message: string }> {
-    const stream = await this.findOne(id);
+    console.log(`[StreamsService] Starting processing for stream ${id}`);
+    
+    try {
+      const stream = await this.findOne(id);
+      console.log(`[StreamsService] Found stream: ${stream.id}, status: ${stream.status}`);
 
-    if (stream.status !== 'downloaded') {
-      throw new BadRequestException(`Stream must be downloaded before processing. Current status: ${stream.status}`);
+      if (stream.status !== 'downloaded') {
+        console.log(`[StreamsService] Stream status is not downloaded: ${stream.status}`);
+        throw new BadRequestException(`Stream must be downloaded before processing. Current status: ${stream.status}`);
+      }
+
+      console.log(`[StreamsService] Adding job to processing queue...`);
+      
+      // Add job to processing queue
+      const job = await this.processingQueue.add('process-stream', {
+        streamId: id,
+        platform: stream.platform,
+        streamerName: stream.streamer?.displayName ?? stream.streamer?.username ?? 'unknown'
+      }, {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+      });
+
+      console.log(`[StreamsService] Processing job added successfully:`, job.id);
+      return { message: `Stream processing started for ${id}` };
+    } catch (error) {
+      console.error(`[StreamsService] Error in processStream:`, error);
+      throw error;
     }
-
-    // Update status to processing
-    await this.update(id, { status: StreamStatus.PROCESSING });
-
-    // Add jobs to processing queue
-    await this.processingQueue.add('segment-stream', {
-      streamId: id,
-      localVideoPath: stream.localVideoPath,
-      duration: stream.duration,
-    }, {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 5000,
-      },
-    });
-
-    return { message: `Stream processing started for ${id}` };
   }
 
   async getStreamChunks(id: string, limit = 50, offset = 0): Promise<{
@@ -218,6 +257,81 @@ export class StreamsService {
     });
 
     return { chunks, total, stream };
+  }
+
+  async completeIngestion(id: string, ingestionData: {
+    title: string;
+    originalUrl: string;
+    platform: string;
+    status: string;
+    duration: number;
+    thumbnailUrl?: string;
+    localVideoPath?: string;
+    localThumbnailPath?: string;
+    fileSize?: number;
+    width?: number;
+    height?: number;
+    fps?: number;
+    streamDate?: string;
+    metadata?: {
+      chunks: any[];
+      chunkCount: number;
+    };
+  }): Promise<{ message: string }> {
+    console.log(`[StreamsService] Completing ingestion for stream ${id}`);
+    
+    try {
+      // Update stream with download information
+      const updateData: Partial<Stream> = {
+        title: ingestionData.title,
+        originalUrl: ingestionData.originalUrl,
+        platform: ingestionData.platform as any,
+        status: ingestionData.status as any,
+        duration: ingestionData.duration,
+        thumbnailUrl: ingestionData.thumbnailUrl,
+        localVideoPath: ingestionData.localVideoPath,
+        localThumbnailPath: ingestionData.localThumbnailPath,
+        fileSize: ingestionData.fileSize,
+        width: ingestionData.width,
+        height: ingestionData.height,
+        fps: ingestionData.fps,
+        streamDate: ingestionData.streamDate ? new Date(ingestionData.streamDate) : undefined,
+        totalChunks: ingestionData.metadata?.chunkCount || 0,
+        updatedAt: new Date(),
+      };
+
+      await this.streamsRepository.update(id, updateData);
+      console.log(`[StreamsService] Updated stream ${id} with download information`);
+
+      // Create chunks if provided
+      if (ingestionData.metadata?.chunks && ingestionData.metadata.chunks.length > 0) {
+        console.log(`[StreamsService] Creating ${ingestionData.metadata.chunks.length} chunks for stream ${id}`);
+        
+        const chunkEntities = ingestionData.metadata.chunks.map((chunkData: any) => {
+          const chunk = this.chunksRepository.create({
+            streamId: id,
+            title: `Chunk ${Math.floor(chunkData.start_time / 60) + 1}`,
+            description: `Video chunk from ${chunkData.start_time}s to ${chunkData.end_time}s`,
+            startTime: chunkData.start_time,
+            endTime: chunkData.end_time,
+            duration: chunkData.duration,
+            status: ChunkStatus.COMPLETED,
+            videoPath: chunkData.file_path,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+          return chunk;
+        });
+
+        await this.chunksRepository.save(chunkEntities);
+        console.log(`[StreamsService] Created ${chunkEntities.length} chunks for stream ${id}`);
+      }
+
+      return { message: `Stream ingestion completed for ${id}` };
+    } catch (error) {
+      console.error(`[StreamsService] Error completing ingestion for stream ${id}:`, error);
+      throw error;
+    }
   }
 
   async getStreamClips(id: string, limit = 50, offset = 0): Promise<{

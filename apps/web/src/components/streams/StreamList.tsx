@@ -5,7 +5,7 @@ import { LoadingSpinner } from '../ui/LoadingSpinner';
 import { EmptyState } from '../ui/EmptyState';
 import { Pagination } from '../ui/Pagination';
 import { Stream } from '../../lib/types';
-import { useStreams, useDeleteStream } from '../../lib/hooks/useStreams';
+import { useStreams, useDeleteStream, useIngestStream, useProcessStream } from '../../lib/hooks/useStreams';
 import { useStreamers } from '../../lib/hooks/useStreamers';
 import { 
   PlusIcon, 
@@ -42,6 +42,8 @@ export function StreamList({ filters = { limit: 12, offset: 0 } }: StreamListPro
   const { data, isLoading, error } = useStreams(localFilters);
   const { data: streamers = [] } = useStreamers();
   const deleteMutation = useDeleteStream();
+  const ingestMutation = useIngestStream();
+  const processMutation = useProcessStream();
 
   const streams = data?.data || [];
   const total = data?.total || 0;
@@ -112,6 +114,22 @@ export function StreamList({ filters = { limit: 12, offset: 0 } }: StreamListPro
       } catch (error) {
         console.error('Delete failed:', error);
       }
+    }
+  };
+
+  const handleIngestStream = async (stream: Stream) => {
+    try {
+      await ingestMutation.mutateAsync(stream.id);
+    } catch (error) {
+      console.error('Ingest failed:', error);
+    }
+  };
+
+  const handleProcessStream = async (stream: Stream) => {
+    try {
+      await processMutation.mutateAsync(stream.id);
+    } catch (error) {
+      console.error('Process failed:', error);
     }
   };
 
@@ -319,13 +337,15 @@ export function StreamList({ filters = { limit: 12, offset: 0 } }: StreamListPro
       {/* Streams grid */}
       {!isLoading && streams.length > 0 && (
         <>
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 overflow-visible">
             {streams.map((stream) => (
               <StreamCard
                 key={stream.id}
                 stream={stream}
                 onView={handleViewStream}
                 onDelete={handleDeleteStream}
+                onIngest={handleIngestStream}
+                onProcess={handleProcessStream}
               />
             ))}
           </div>

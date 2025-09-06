@@ -84,6 +84,9 @@ export class Stream {
   @Column({ type: 'int', default: 0 })
   viewCount: number;
 
+  @Column({ type: 'int', default: 0 })
+  totalChunks: number;
+
   @Column({ type: 'jsonb', nullable: true })
   metadata: Record<string, any>;
 

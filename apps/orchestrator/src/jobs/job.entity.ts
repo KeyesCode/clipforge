@@ -13,6 +13,8 @@ import { Clip } from '../clips/clip.entity';
 
 export enum JobType {
   INGEST_STREAM = 'ingest_stream',
+  DOWNLOAD_STREAM = 'download-stream',
+  PROCESS_STREAM = 'process-stream',
   GENERATE_HIGHLIGHTS = 'generate_highlights',
   RENDER_CLIP = 'render_clip',
   PUBLISH_CLIP = 'publish_clip',
@@ -24,6 +26,7 @@ export enum JobType {
 export enum JobStatus {
   PENDING = 'pending',
   RUNNING = 'running',
+  PROCESSING = 'processing',
   COMPLETED = 'completed',
   FAILED = 'failed',
   CANCELLED = 'cancelled',

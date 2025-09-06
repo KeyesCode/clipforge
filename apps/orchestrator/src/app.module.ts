@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
 import { MulterModule } from '@nestjs/platform-express';
 import { ServeStaticModule } from '@nestjs/serve-static';
+import { HttpModule } from '@nestjs/axios';
 import { join } from 'path';
 import { diskStorage } from 'multer';
 
@@ -58,6 +59,7 @@ import { Queue } from './queue/queue.entity';
           host: configService.get('QUEUE_REDIS_HOST', 'localhost'),
           port: configService.get('QUEUE_REDIS_PORT', 6379),
           db: configService.get('QUEUE_REDIS_DB', 0),
+          password: configService.get('QUEUE_REDIS_PASSWORD'),
         },
         defaultJobOptions: {
           removeOnComplete: 10,
@@ -117,6 +119,12 @@ import { Queue } from './queue/queue.entity';
         },
       ],
       inject: [ConfigService],
+    }),
+
+    // HTTP Module for external service calls
+    HttpModule.register({
+      timeout: 30000,
+      maxRedirects: 5,
     }),
 
     // Feature modules

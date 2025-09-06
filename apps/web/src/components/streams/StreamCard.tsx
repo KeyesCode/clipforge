@@ -6,6 +6,8 @@ import {
   EllipsisHorizontalIcon,
   TrashIcon,
   EyeIcon,
+  ArrowDownTrayIcon,
+  CogIcon,
 } from '@heroicons/react/24/outline';
 import { Menu, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
@@ -22,13 +24,15 @@ interface StreamCardProps {
   stream: Stream;
   onView?: (stream: Stream) => void;
   onDelete?: (stream: Stream) => void;
+  onIngest?: (stream: Stream) => void;
+  onProcess?: (stream: Stream) => void;
 }
 
-export function StreamCard({ stream, onView, onDelete }: StreamCardProps) {
+export function StreamCard({ stream, onView, onDelete, onIngest, onProcess }: StreamCardProps) {
   const platform = extractPlatform(stream.originalUrl);
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
+    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-visible hover:shadow-md transition-shadow">
       {/* Thumbnail */}
       <div className="relative aspect-video bg-gray-100">
         {stream.thumbnailUrl ? (
@@ -142,7 +146,7 @@ export function StreamCard({ stream, onView, onDelete }: StreamCardProps) {
               leaveFrom="transform opacity-100 scale-100"
               leaveTo="transform opacity-0 scale-95"
             >
-              <Menu.Items className="absolute right-0 z-10 mt-2 w-48 origin-top-right rounded-md bg-white py-1 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
+              <Menu.Items className="absolute right-0 z-50 mt-2 w-48 origin-top-right rounded-md bg-white py-1 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
                 {onView && (
                   <Menu.Item>
                     {({ active }) => (
@@ -176,6 +180,40 @@ export function StreamCard({ stream, onView, onDelete }: StreamCardProps) {
                     </a>
                   )}
                 </Menu.Item>
+                
+                {onIngest && stream.status === 'pending' && (
+                  <Menu.Item>
+                    {({ active }) => (
+                      <button
+                        onClick={() => onIngest(stream)}
+                        className={cn(
+                          active ? 'bg-gray-50' : '',
+                          'flex w-full items-center px-4 py-2 text-sm text-blue-700'
+                        )}
+                      >
+                        <ArrowDownTrayIcon className="mr-3 h-4 w-4" />
+                        Start Ingestion
+                      </button>
+                    )}
+                  </Menu.Item>
+                )}
+                
+                {onProcess && stream.status === 'downloaded' && (
+                  <Menu.Item>
+                    {({ active }) => (
+                      <button
+                        onClick={() => onProcess(stream)}
+                        className={cn(
+                          active ? 'bg-gray-50' : '',
+                          'flex w-full items-center px-4 py-2 text-sm text-green-700'
+                        )}
+                      >
+                        <CogIcon className="mr-3 h-4 w-4" />
+                        Start Processing
+                      </button>
+                    )}
+                  </Menu.Item>
+                )}
                 
                 {onDelete && (
                   <Menu.Item>

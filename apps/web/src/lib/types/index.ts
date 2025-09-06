@@ -36,7 +36,7 @@ export interface Stream {
   title: string;
   description?: string;
   originalUrl: string;
-  status: 'pending' | 'downloading' | 'processing' | 'completed' | 'failed' | 'published';
+  status: 'pending' | 'downloading' | 'processing' | 'downloaded' | 'completed' | 'failed' | 'published';
   duration: number;
   thumbnailUrl?: string;
   totalChunks: number;
