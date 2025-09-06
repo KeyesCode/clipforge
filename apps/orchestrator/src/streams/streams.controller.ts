@@ -24,7 +24,7 @@ export class StreamsController {
     @Query('streamerId') streamerId?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
-  ): Promise<{ streams: Stream[]; total: number }> {
+  ): Promise<{ data: Stream[]; total: number; limit: number; offset: number; hasNext: boolean; hasPrev: boolean }> {
     try {
       const limitNum = limit ? parseInt(limit, 10) : 50;
       const offsetNum = offset ? parseInt(offset, 10) : 0;
@@ -36,8 +36,16 @@ export class StreamsController {
         offsetNum
       };
       
-
-      return await this.streamsService.findAll(filters);
+      const result = await this.streamsService.findAll(filters);
+      
+      return {
+        data: result.streams,
+        total: result.total,
+        limit: limitNum,
+        offset: offsetNum,
+        hasNext: offsetNum + limitNum < result.total,
+        hasPrev: offsetNum > 0
+      };
     } catch (error) {
       throw new HttpException(
         'Failed to retrieve streams',

@@ -22,7 +22,7 @@ export function StreamerList() {
   };
 
   const handleDelete = async (streamer: Streamer) => {
-    if (confirm(`Are you sure you want to delete "${streamer.name}"? This will also delete all associated streams and clips.`)) {
+    if (confirm(`Are you sure you want to delete "${streamer.displayName}"? This will also delete all associated streams and clips.`)) {
       try {
         await deleteMutation.mutateAsync(streamer.id);
       } catch (error) {

@@ -2,15 +2,32 @@
 
 export interface Streamer {
   id: string;
-  name: string;
-  platform: 'twitch' | 'youtube' | 'kick' | 'other';
-  channelUrl: string;
+  username: string;
+  displayName: string;
+  platform?: string;
+  platformId?: string;
   avatarUrl?: string;
+  description?: string;
   isActive: boolean;
-  totalStreams: number;
-  totalClips: number;
+  settings?: {
+    autoIngest?: boolean;
+    clipDuration?: number;
+    preferredAspectRatio?: string;
+    captionStyle?: string;
+    publishingEnabled?: boolean;
+    platforms?: string[];
+  };
+  metadata?: {
+    followerCount?: number;
+    subscriberCount?: number;
+    lastStreamDate?: string;
+    totalStreams?: number;
+    totalClips?: number;
+  };
   createdAt: string;
   updatedAt: string;
+  lastSyncAt?: string;
+  lastActivityAt?: string;
 }
 
 export interface Stream {
