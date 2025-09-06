@@ -148,6 +148,7 @@ services:
     container_name: clipforge_ingest
     environment:
       - REDIS_URL=${REDIS_URL}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
       - STORAGE_PATH=${STORAGE_PATH}
       - CHUNK_DURATION=${CHUNK_DURATION}
       - CHUNK_OVERLAP=${CHUNK_OVERLAP}
@@ -158,6 +159,8 @@ services:
       - TEMP_DIR=${TEMP_DIR}
       - MAX_DOWNLOAD_SIZE=${MAX_DOWNLOAD_SIZE}
       - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT}
+    ports:
+      - "8001:8001"
     volumes:
       - storage_data:${STORAGE_PATH}
       - temp_data:${TEMP_DIR}
@@ -184,6 +187,8 @@ services:
       - VAD_FILTER=${VAD_FILTER}
       - VAD_THRESHOLD=${VAD_THRESHOLD}
       - TEMP_DIR=${TEMP_DIR}
+    ports:
+      - "8002:8002"
     volumes:
       - storage_data:${STORAGE_PATH}
       - temp_data:${TEMP_DIR}
@@ -216,6 +221,9 @@ services:
       - FACE_CONFIDENCE_THRESHOLD=${FACE_CONFIDENCE_THRESHOLD}
       - FRAME_SAMPLE_RATE=${FRAME_SAMPLE_RATE}
       - TEMP_DIR=${TEMP_DIR}
+      - VISION_SERVICE_PORT=8003
+    ports:
+      - "8003:8003"
     volumes:
       - storage_data:${STORAGE_PATH}
       - temp_data:${TEMP_DIR}
@@ -251,6 +259,9 @@ services:
       - TOP_CLIPS_COUNT=${TOP_CLIPS_COUNT}
       - OVERLAP_THRESHOLD=${OVERLAP_THRESHOLD}
       - TEMP_DIR=${TEMP_DIR}
+      - PORT=8004
+    ports:
+      - "8004:8004"
     volumes:
       - storage_data:${STORAGE_PATH}
       - temp_data:${TEMP_DIR}
@@ -280,6 +291,9 @@ services:
       - WATERMARK_POSITION=${WATERMARK_POSITION}
       - WATERMARK_OPACITY=${WATERMARK_OPACITY}
       - TEMP_DIR=${TEMP_DIR}
+      - RENDER_SERVICE_PORT=8005
+    ports:
+      - "8005:8005"
     volumes:
       - storage_data:${STORAGE_PATH}
       - temp_data:${TEMP_DIR}

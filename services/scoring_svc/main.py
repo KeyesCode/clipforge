@@ -85,6 +85,7 @@ class ScoringService:
             self.redis_client = redis.Redis(
                 host=config['redis']['host'],
                 port=config['redis']['port'],
+                password=config['redis'].get('password'),
                 db=config['redis']['db'],
                 decode_responses=True
             )
@@ -197,7 +198,7 @@ class ScoringService:
             # Store features in Redis
             feature_key = f"chunk_features:{request.chunk_id}"
             await self.redis_client.hset(feature_key, mapping=features)
-            await self.redis_client.expire(feature_key, config['redis']['ttl'])
+            await self.redis_client.expire(feature_key, config['redis']['result_ttl'])
             
             # Publish chunk analyzed event
             event = {
@@ -330,7 +331,7 @@ class ScoringService:
             await self.redis_client.hset(scores_key, mapping={
                 chunk_id: str(score) for chunk_id, score in smoothed_scores.items()
             })
-            await self.redis_client.expire(scores_key, config['redis']['ttl'])
+            await self.redis_client.expire(scores_key, config['redis']['result_ttl'])
             
             # Publish highlights scored event
             event = {
@@ -462,7 +463,7 @@ class ScoringService:
                 }
                 
                 await self.redis_client.hset(clip_key, mapping=clip_data)
-                await self.redis_client.expire(clip_key, config['redis']['ttl'])
+                await self.redis_client.expire(clip_key, config['redis']['result_ttl'])
             
             # Publish clip generation event
             event = {
@@ -616,7 +617,7 @@ app = service.app
 if __name__ == "__main__":
     import uvicorn
     
-    port = int(os.getenv("PORT", 8003))
+    port = int(os.getenv("PORT", 8004))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",

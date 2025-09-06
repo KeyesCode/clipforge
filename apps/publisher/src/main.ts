@@ -5,7 +5,7 @@ import { createLogger, format, transports } from 'winston';
 import Redis from 'ioredis';
 import Queue from 'bull';
 import { YouTubePublisher } from './youtube';
-import { XPublisher } from './x';
+import { XPublisher, XConfig } from './x';
 
 // Types for job data
 interface PublishJobData {
@@ -68,16 +68,22 @@ class PublisherService {
   }
 
   private setupRedis(): void {
-    const redisConfig = {
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      db: parseInt(process.env.REDIS_DB || '0'),
-      retryDelayOnFailover: 100,
-      enableReadyCheck: false,
-      maxRetriesPerRequest: null,
-    };
-
-    this.redis = new Redis(redisConfig);
+    // Use REDIS_URL if available, otherwise fall back to individual config
+    const redisUrl = process.env.REDIS_URL;
+    
+    if (redisUrl) {
+      // Create Redis instance with URL
+      this.redis = new Redis(redisUrl);
+    } else {
+      // Create Redis instance with individual config
+      const redisConfig = {
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379'),
+        password: process.env.REDIS_PASSWORD || 'redis_secure_password_2024',
+        db: parseInt(process.env.REDIS_DB || '0'),
+      };
+      this.redis = new Redis(redisConfig);
+    }
 
     this.redis.on('connect', () => {
       this.logger.info('Connected to Redis');
@@ -89,12 +95,18 @@ class PublisherService {
   }
 
   private setupQueue(): void {
-    this.publishQueue = new Queue('publish', {
-      redis: {
-        host: process.env.QUEUE_REDIS_HOST || process.env.REDIS_HOST || 'localhost',
+    // Configure Queue Redis connection
+    const queueRedisConfig = process.env.REDIS_URL ? 
+      process.env.REDIS_URL : 
+      {
+        host: process.env.QUEUE_REDIS_HOST || process.env.REDIS_HOST || 'redis',
         port: parseInt(process.env.QUEUE_REDIS_PORT || process.env.REDIS_PORT || '6379'),
+        password: process.env.QUEUE_REDIS_PASSWORD || process.env.REDIS_PASSWORD || 'redis_secure_password_2024',
         db: parseInt(process.env.QUEUE_REDIS_DB || '1'),
-      },
+      };
+
+    this.publishQueue = new Queue('publish', {
+      redis: queueRedisConfig,
       defaultJobOptions: {
         removeOnComplete: 100,
         removeOnFail: 50,
@@ -139,19 +151,47 @@ class PublisherService {
   }
 
   private setupPublishers(): void {
-    this.youtubePublisher = new YouTubePublisher({
-      clientId: process.env.YOUTUBE_CLIENT_ID!,
-      clientSecret: process.env.YOUTUBE_CLIENT_SECRET!,
-      redirectUri: process.env.YOUTUBE_REDIRECT_URI!,
-      refreshToken: process.env.YOUTUBE_REFRESH_TOKEN!,
-    });
+    // Only initialize YouTube publisher if credentials are provided
+    const youtubeConfig = {
+      clientId: process.env.YOUTUBE_CLIENT_ID,
+      clientSecret: process.env.YOUTUBE_CLIENT_SECRET,
+      redirectUri: process.env.YOUTUBE_REDIRECT_URI,
+      refreshToken: process.env.YOUTUBE_REFRESH_TOKEN,
+    };
+    
+    if (youtubeConfig.clientId && youtubeConfig.clientSecret && 
+        youtubeConfig.redirectUri && youtubeConfig.refreshToken &&
+        !youtubeConfig.clientId.startsWith('your_')) {
+      try {
+        this.youtubePublisher = new YouTubePublisher(youtubeConfig as any);
+        this.logger.info('YouTube publisher initialized');
+      } catch (error) {
+        this.logger.warn('Failed to initialize YouTube publisher:', error);
+      }
+    } else {
+      this.logger.info('YouTube publisher not initialized - missing or placeholder credentials');
+    }
 
-    this.xPublisher = new XPublisher({
-      appKey: process.env.X_API_KEY!,
-      appSecret: process.env.X_API_SECRET!,
-      accessToken: process.env.X_ACCESS_TOKEN!,
-      accessSecret: process.env.X_ACCESS_TOKEN_SECRET!,
-    });
+    // Only initialize X publisher if credentials are provided
+    const xConfig = {
+      appKey: process.env.TWITTER_API_KEY,
+      appSecret: process.env.TWITTER_API_SECRET,
+      accessToken: process.env.TWITTER_ACCESS_TOKEN,
+      accessSecret: process.env.TWITTER_ACCESS_SECRET,
+    };
+    
+    if (xConfig.appKey && xConfig.appSecret && 
+        xConfig.accessToken && xConfig.accessSecret &&
+        !xConfig.appKey.startsWith('your_')) {
+      try {
+        this.xPublisher = new XPublisher(xConfig as XConfig);
+        this.logger.info('X publisher initialized');
+      } catch (error) {
+        this.logger.warn('Failed to initialize X publisher:', error);
+      }
+    } else {
+      this.logger.info('X publisher not initialized - missing or placeholder credentials');
+    }
   }
 
   private async processPublishJob(data: PublishJobData): Promise<PublishResult> {
@@ -162,6 +202,9 @@ class PublisherService {
 
       switch (data.platform) {
         case 'youtube':
+          if (!this.youtubePublisher) {
+            throw new Error('YouTube publisher not initialized - check API credentials');
+          }
           result = await this.youtubePublisher.publishShort({
             videoPath: data.videoPath,
             thumbnailPath: data.thumbnailPath,
@@ -173,6 +216,9 @@ class PublisherService {
           break;
 
         case 'x':
+          if (!this.xPublisher) {
+            throw new Error('X publisher not initialized - check API credentials');
+          }
           result = await this.xPublisher.publishVideo({
             videoPath: data.videoPath,
             text: data.title,
