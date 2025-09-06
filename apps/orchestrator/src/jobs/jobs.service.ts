@@ -43,8 +43,8 @@ export class JobsService {
 
     if (createdAfter || createdBefore) {
       where.createdAt = {};
-      if (createdAfter) where.createdAt = Between(createdAfter, createdBefore || new Date());
-      if (createdBefore && !createdAfter) where.createdAt = Between(new Date(0), createdBefore);
+      if (createdAfter) where.createdAt = Between(new Date(createdAfter), createdBefore ? new Date(createdBefore) : new Date());
+      if (createdBefore && !createdAfter) where.createdAt = Between(new Date(0), new Date(createdBefore));
     }
 
     const findOptions: FindManyOptions<Job> = {
@@ -218,7 +218,9 @@ export class JobsService {
     stats.forEach(stat => {
       const count = parseInt(stat.count);
       result.total += count;
-      result[stat.status] = count;
+      if (stat.status in result) {
+        result[stat.status as keyof typeof result] = count;
+      }
     });
 
     return result;
