@@ -26,51 +26,40 @@ Expected response:
 
 ## API Endpoints
 
-### 1. Download VOD
+### 1. Ingest Stream/VOD
 ```bash
-curl -X POST http://localhost:8001/download \
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "test-stream-123",
-    "vodUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    "title": "Test Video",
-    "platform": "youtube"
+    "stream_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "streamer_id": "test-streamer-123",
+    "stream_title": "Test Video",
+    "job_id": "test-job-123"
   }'
 ```
 
-### 2. Chunk Video
-```bash
-curl -X POST http://localhost:8001/chunk \
-  -H "Content-Type: application/json" \
-  -d '{
-    "streamId": "test-stream-123",
-    "videoPath": "/path/to/video.mp4",
-    "chunkDuration": 300
-  }'
-```
-
-### 3. Get Download Status
+### 2. Get Stream Status
 ```bash
 curl http://localhost:8001/status/test-stream-123
 ```
 
-### 4. List Available Downloads
+### 3. Cleanup Stream Files
 ```bash
-curl http://localhost:8001/downloads
+curl -X DELETE http://localhost:8001/cleanup/test-stream-123
 ```
 
 ## Testing Scenarios
 
-### Test 1: YouTube Video Download
+### Test 1: YouTube Video Ingest
 ```bash
-# Start download
-curl -X POST http://localhost:8001/download \
+# Start ingestion
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "youtube-test-001",
-    "vodUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    "title": "Rick Astley - Never Gonna Give You Up",
-    "platform": "youtube"
+    "stream_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "streamer_id": "youtube-test-001",
+    "stream_title": "Rick Astley - Never Gonna Give You Up",
+    "job_id": "job-001"
   }'
 
 # Check status
@@ -79,35 +68,33 @@ curl http://localhost:8001/status/youtube-test-001
 # Expected response:
 # {
 #   "streamId": "youtube-test-001",
-#   "status": "downloading", // or "completed", "failed"
-#   "progress": 45.2,
-#   "downloadedBytes": 15728640,
-#   "totalBytes": 34816000,
-#   "error": null
+#   "downloadExists": true,
+#   "chunksExist": true,
+#   "chunkCount": 12
 # }
 ```
 
-### Test 2: Twitch VOD Download
+### Test 2: Twitch VOD Ingest
 ```bash
-curl -X POST http://localhost:8001/download \
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "twitch-test-001",
-    "vodUrl": "https://www.twitch.tv/videos/123456789",
-    "title": "Epic Gaming Stream",
-    "platform": "twitch"
+    "stream_url": "https://www.twitch.tv/videos/123456789",
+    "streamer_id": "twitch-test-001",
+    "stream_title": "Epic Gaming Stream",
+    "job_id": "job-002"
   }'
 ```
 
 ### Test 3: Direct Video URL
 ```bash
-curl -X POST http://localhost:8001/download \
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "direct-test-001",
-    "vodUrl": "https://example.com/video.mp4",
-    "title": "Direct Video Test",
-    "platform": "direct"
+    "stream_url": "https://example.com/video.mp4",
+    "streamer_id": "direct-test-001",
+    "stream_title": "Direct Video Test",
+    "job_id": "job-003"
   }'
 ```
 
@@ -166,13 +153,13 @@ docker logs -f clipforge_ingest
 
 ### Test Invalid URL
 ```bash
-curl -X POST http://localhost:8001/download \
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "error-test-001",
-    "vodUrl": "https://invalid-url-that-does-not-exist.com/video.mp4",
-    "title": "Error Test",
-    "platform": "youtube"
+    "stream_url": "https://invalid-url-that-does-not-exist.com/video.mp4",
+    "streamer_id": "error-test-001",
+    "stream_title": "Error Test",
+    "job_id": "job-error-001"
   }'
 
 # Should return error response
@@ -180,13 +167,13 @@ curl -X POST http://localhost:8001/download \
 
 ### Test Private Video
 ```bash
-curl -X POST http://localhost:8001/download \
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "private-test-001",
-    "vodUrl": "https://www.youtube.com/watch?v=private_video_id",
-    "title": "Private Video Test",
-    "platform": "youtube"
+    "stream_url": "https://www.youtube.com/watch?v=private_video_id",
+    "streamer_id": "private-test-001",
+    "stream_title": "Private Video Test",
+    "job_id": "job-private-001"
   }'
 
 # Should fail with permission error
@@ -197,13 +184,13 @@ curl -X POST http://localhost:8001/download \
 ### Test Large Video
 ```bash
 # Test with a longer video (be careful with bandwidth)
-curl -X POST http://localhost:8001/download \
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "large-test-001",
-    "vodUrl": "https://www.youtube.com/watch?v=long_video_id",
-    "title": "Large Video Test",
-    "platform": "youtube"
+    "stream_url": "https://www.youtube.com/watch?v=long_video_id",
+    "streamer_id": "large-test-001",
+    "stream_title": "Large Video Test",
+    "job_id": "job-large-001"
   }'
 ```
 
@@ -216,9 +203,14 @@ df -h
 docker stats clipforge_ingest
 
 # Check processing time
-time curl -X POST http://localhost:8001/download \
+time curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
-  -d '{...}'
+  -d '{
+    "stream_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "streamer_id": "perf-test-001",
+    "stream_title": "Performance Test",
+    "job_id": "job-perf-001"
+  }'
 ```
 
 ## Configuration Testing
@@ -235,46 +227,44 @@ export AUDIO_BITRATE=96k   # Lower audio quality
 
 ### Custom Settings
 ```bash
-curl -X POST http://localhost:8001/download \
+curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "streamId": "custom-test-001",
-    "vodUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    "title": "Custom Settings Test",
-    "platform": "youtube",
-    "options": {
-      "maxResolution": "480p",
-      "audioBitrate": "128k",
-      "chunkDuration": 240
-    }
+    "stream_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "streamer_id": "custom-test-001",
+    "stream_title": "Custom Settings Test",
+    "job_id": "job-custom-001"
   }'
 ```
 
 ## Expected Output Structure
 
-### Download Completion
+### Ingest Response
+```json
+{
+  "message": "Ingestion started",
+  "correlationId": "461b514a-65da-428c-952f-705c24c81175",
+  "jobId": "test-job-123"
+}
+```
+
+### Status Response
 ```json
 {
   "streamId": "youtube-test-001",
-  "status": "completed",
-  "downloadPath": "/app/storage/downloads/youtube-test-001/video.mp4",
-  "chunks": [
-    {
-      "id": "chunk_000",
-      "path": "/app/storage/chunks/youtube-test-001/chunk_000.mp4",
-      "startTime": 0,
-      "duration": 300,
-      "size": 52428800
-    }
-  ],
-  "totalChunks": 12,
-  "totalDuration": 3542,
-  "videoInfo": {
-    "format": "mp4",
-    "resolution": "1920x1080",
-    "fps": 30,
-    "bitrate": "1500k"
-  }
+  "downloadExists": true,
+  "chunksExist": true,
+  "chunkCount": 12
+}
+```
+
+### Health Check Response
+```json
+{
+  "status": "healthy",
+  "service": "ingest_svc",
+  "timestamp": "2025-09-06T00:21:07.904575+00:00",
+  "redis_connected": true
 }
 ```
 
