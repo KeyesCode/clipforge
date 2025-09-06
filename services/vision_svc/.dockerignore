@@ -16,3 +16,41 @@ tmp
 *.swp
 *.swo
 *~
+
+# Large model files and directories
+models/
+cache/
+temp/
+*.bin
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.model
+*.onnx
+*.weights
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-*
+
+# Documentation
+README.md
+docs/
+*.md
+
+# Test files
+tests/
+test_*
+*_test.py
+
+# Environment files
+.env.*
+!.env.example
