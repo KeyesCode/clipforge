@@ -3,10 +3,12 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
 import { MulterModule } from '@nestjs/platform-express';
-import { ServeStaticModule } from '@nestjs/serve-static';
 import { HttpModule } from '@nestjs/axios';
 import { join } from 'path';
 import { diskStorage } from 'multer';
+
+// Services
+import { S3Service } from './common/services/s3.service';
 
 // Feature modules
 import { StreamersModule } from './streamers/streamers.module';
@@ -109,21 +111,7 @@ import { Queue } from './queue/queue.entity';
       inject: [ConfigService],
     }),
 
-    // Serve static files (uploaded videos, clips, etc.)
-    ServeStaticModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => [
-        {
-          rootPath: configService.get('UPLOAD_PATH', './uploads'),
-          serveRoot: '/uploads',
-        },
-        {
-          rootPath: configService.get('STORAGE_PATH', './storage'),
-          serveRoot: '/storage',
-        },
-      ],
-      inject: [ConfigService],
-    }),
+    // Note: Static file serving removed - now using S3 URLs directly
 
     // HTTP Module for external service calls
     HttpModule.register({
@@ -140,7 +128,7 @@ import { Queue } from './queue/queue.entity';
     QueueModule,
   ],
   controllers: [],
-  providers: [],
+  providers: [S3Service],
 })
 export class AppModule {
   constructor(private configService: ConfigService) {
