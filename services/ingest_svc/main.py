@@ -161,6 +161,55 @@ class IngestService:
         download_dir = STORAGE_PATH / "downloads" / stream_id
         download_dir.mkdir(parents=True, exist_ok=True)
 
+        # Progress tracking
+        self.active_downloads[stream_id] = {
+            'downloaded_bytes': 0,
+            'total_bytes': 0,
+            'start_time': datetime.now(timezone.utc),
+            'last_update': datetime.now(timezone.utc)
+        }
+
+        def progress_hook(d):
+            if d['status'] == 'downloading':
+                if 'total_bytes' in d and d['total_bytes']:
+                    self.active_downloads[stream_id]['total_bytes'] = d['total_bytes']
+                if 'downloaded_bytes' in d and d['downloaded_bytes']:
+                    self.active_downloads[stream_id]['downloaded_bytes'] = d['downloaded_bytes']
+                
+                # Calculate progress
+                total_bytes = self.active_downloads[stream_id]['total_bytes']
+                downloaded_bytes = self.active_downloads[stream_id]['downloaded_bytes']
+                
+                if total_bytes > 0:
+                    progress = int((downloaded_bytes / total_bytes) * 100)
+                    
+                    # Calculate ETA
+                    now = datetime.now(timezone.utc)
+                    elapsed = (now - self.active_downloads[stream_id]['start_time']).total_seconds()
+                    
+                    if elapsed > 0 and downloaded_bytes > 0:
+                        rate = downloaded_bytes / elapsed
+                        remaining_bytes = total_bytes - downloaded_bytes
+                        eta_seconds = int(remaining_bytes / rate) if rate > 0 else 0
+                    else:
+                        eta_seconds = 0
+                    
+                    # Format progress message
+                    total_gb = total_bytes / (1024**3)
+                    downloaded_gb = downloaded_bytes / (1024**3)
+                    progress_message = f"Downloading {total_gb:.1f}GB... {progress}% complete"
+                    
+                    # Update progress in database via orchestrator
+                    asyncio.create_task(self.update_stream_progress(
+                        stream_id, 
+                        progress, 
+                        'downloading', 
+                        progress_message, 
+                        eta_seconds,
+                        downloaded_bytes,
+                        total_bytes
+                    ))
+
         # yt-dlp options
         ydl_opts = {
             'format': 'best[height<=1080]',
@@ -172,6 +221,7 @@ class IngestService:
             'ignoreerrors': False,
             'no_warnings': False,
             'extractflat': False,
+            'progress_hooks': [progress_hook],
         }
 
         try:
@@ -335,6 +385,22 @@ class IngestService:
         except Exception as e:
             logger.error("Error notifying orchestrator", endpoint=endpoint, error=str(e))
 
+    async def update_stream_progress(self, stream_id: str, progress: int, stage: str, 
+                                   message: str, eta_seconds: int, 
+                                   downloaded_bytes: int, total_bytes: int):
+        """Update stream progress in orchestrator"""
+        try:
+            await self.notify_orchestrator(f"streams/{stream_id}/progress", {
+                "processingProgress": progress,
+                "currentStage": stage,
+                "progressMessage": message,
+                "estimatedTimeRemaining": eta_seconds,
+                "downloadedBytes": downloaded_bytes,
+                "totalBytes": total_bytes
+            })
+        except Exception as e:
+            logger.error("Failed to update stream progress", stream_id=stream_id, error=str(e))
+
     async def process_ingest_job(self, request: StreamIngestRequest, correlation_id: str):
         """Process complete ingestion job"""
         # Use the provided stream_id if available, otherwise generate a new one
@@ -372,13 +438,27 @@ class IngestService:
                 }
             }, correlation_id)
 
-            # Update progress
-            await self.publish_event("job.status_changed", {
-                "jobId": request.job_id,
-                "status": "processing",
-                "stage": "chunking",
-                "progress": 50
-            }, correlation_id)
+            # Update progress for fixing stage
+            await self.update_stream_progress(
+                stream_id, 
+                50, 
+                'fixing', 
+                'Fixing video format...', 
+                0,
+                stream_metadata.file_size,
+                stream_metadata.file_size
+            )
+
+            # Update progress for chunking stage
+            await self.update_stream_progress(
+                stream_id, 
+                75, 
+                'chunking', 
+                'Creating video chunks...', 
+                0,
+                stream_metadata.file_size,
+                stream_metadata.file_size
+            )
 
             # Chunk video
             chunks = await self.chunk_video(stream_metadata)
@@ -403,6 +483,17 @@ class IngestService:
                 "streamId": stream_id,
                 "chunks": chunks_data
             }, correlation_id)
+
+            # Update progress for completion
+            await self.update_stream_progress(
+                stream_id, 
+                100, 
+                'completed', 
+                f'Completed! Created {len(chunks)} chunks', 
+                0,
+                stream_metadata.file_size,
+                stream_metadata.file_size
+            )
 
             # Notify orchestrator to complete ingestion
             await self.notify_orchestrator(f"streams/{stream_id}/complete-ingestion", {
@@ -487,7 +578,7 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 @app.post("/ingest")
-async def ingest_stream(request: StreamIngestRequest, background_tasks: BackgroundTasks):
+async def ingest_stream(request: StreamIngestRequest):
     """Ingest a stream/VOD"""
     correlation_id = str(uuid.uuid4())
     
@@ -496,18 +587,17 @@ async def ingest_stream(request: StreamIngestRequest, background_tasks: Backgrou
                streamer_id=request.streamer_id,
                correlation_id=correlation_id)
     
-    # Add background task
-    background_tasks.add_task(
-        ingest_service.process_ingest_job, 
-        request, 
-        correlation_id
-    )
-    
-    return {
-        "message": "Ingestion started",
-        "correlationId": correlation_id,
-        "jobId": request.job_id
-    }
+    # Process job synchronously for debugging
+    try:
+        await ingest_service.process_ingest_job(request, correlation_id)
+        return {
+            "message": "Ingestion completed",
+            "correlationId": correlation_id,
+            "jobId": request.job_id
+        }
+    except Exception as e:
+        logger.error("Ingestion failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
 @app.get("/status/{stream_id}")
 async def get_stream_status(stream_id: str):

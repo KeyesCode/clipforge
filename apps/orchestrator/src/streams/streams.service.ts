@@ -457,4 +457,35 @@ export class StreamsService {
       errorMessage: error,
     });
   }
+
+  async updateProgress(id: string, progressData: {
+    processingProgress: number;
+    currentStage: string;
+    progressMessage: string;
+    estimatedTimeRemaining: number;
+    downloadedBytes: number;
+    totalBytes: number;
+  }): Promise<{ message: string }> {
+    console.log(`[StreamsService] Updating progress for stream ${id}:`, progressData);
+    
+    try {
+      const updateData: Partial<Stream> = {
+        processingProgress: progressData.processingProgress,
+        currentStage: progressData.currentStage,
+        progressMessage: progressData.progressMessage,
+        estimatedTimeRemaining: progressData.estimatedTimeRemaining,
+        downloadedBytes: progressData.downloadedBytes,
+        totalBytes: progressData.totalBytes,
+        updatedAt: new Date(),
+      };
+
+      await this.streamsRepository.update(id, updateData);
+      console.log(`[StreamsService] Updated progress for stream ${id}`);
+
+      return { message: `Stream progress updated for ${id}` };
+    } catch (error) {
+      console.error(`[StreamsService] Error updating progress for stream ${id}:`, error);
+      throw error;
+    }
+  }
 }

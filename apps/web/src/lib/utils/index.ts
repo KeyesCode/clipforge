@@ -37,6 +37,13 @@ export function formatFileSize(bytes: number): string {
 }
 
 /**
+ * Format bytes to human readable format (alias for formatFileSize)
+ */
+export function formatBytes(bytes: number): string {
+  return formatFileSize(bytes);
+}
+
+/**
  * Format date to various formats
  */
 export function formatDate(date: string | Date, formatStr: string = 'MMM d, yyyy'): string {

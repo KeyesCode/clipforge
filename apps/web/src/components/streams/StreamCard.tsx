@@ -19,6 +19,7 @@ import {
   cn,
   extractPlatform 
 } from '../../lib/utils';
+import { StreamProgress } from './StreamProgress';
 
 interface StreamCardProps {
   stream: Stream;
@@ -101,19 +102,10 @@ export function StreamCard({ stream, onView, onDelete, onIngest, onProcess }: St
           </div>
         </div>
         
-        {/* Progress bar (if processing) */}
+        {/* Progress indicator (if processing) */}
         {(stream.status === 'processing' || stream.status === 'downloading') && (
           <div className="mb-3">
-            <div className="flex justify-between text-xs text-gray-500 mb-1">
-              <span>Progress</span>
-              <span>{stream.processingProgress}%</span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
-              <div 
-                className="h-2 rounded-full bg-indigo-600 transition-all duration-300"
-                style={{ width: `${stream.processingProgress}%` }}
-              />
-            </div>
+            <StreamProgress stream={stream} />
           </div>
         )}
         

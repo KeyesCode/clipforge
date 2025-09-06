@@ -42,6 +42,11 @@ export interface Stream {
   totalChunks: number;
   totalClips: number;
   processingProgress: number;
+  currentStage?: string; // 'downloading', 'fixing', 'chunking', 'completed'
+  progressMessage?: string; // e.g., "Downloading 8.29GB... 45% complete"
+  estimatedTimeRemaining?: number; // in seconds
+  downloadedBytes?: number; // bytes downloaded so far
+  totalBytes?: number; // total bytes to download
   createdAt: string;
   updatedAt: string;
   streamer?: Streamer;
