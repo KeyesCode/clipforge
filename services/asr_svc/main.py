@@ -2,23 +2,27 @@
 """
 ASR Service - Automatic Speech Recognition using faster-whisper
 Processes audio chunks and generates transcriptions with word-level timestamps
+Integrated with ClipForge orchestrator webhook system
 """
 
 import os
 import json
 import asyncio
 import uuid
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 import structlog
-import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import aiohttp
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+# S3 integration
+from s3_utils.s3_client import S3Client
 
 # Whisper and audio processing
 from faster_whisper import WhisperModel
@@ -51,22 +55,31 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Environment configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
 SERVICE_PORT = int(os.getenv("ASR_SERVICE_PORT", "8002"))
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "./data/chunks")
 TRANSCRIPTION_STORAGE_PATH = os.getenv("TRANSCRIPTION_STORAGE_PATH", "./data/transcriptions")
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_ASR_JOBS", "2"))
 
+# Orchestrator webhook configuration
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
+ASR_WEBHOOK_ENDPOINT = "/api/processing/webhooks/asr-complete"
+
+# S3 configuration
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "clipforge-storage")
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "http://localhost:4566")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "test")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "test")
+AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+
 # Pydantic models
 class ChunkTranscribeRequest(BaseModel):
-    chunk_id: str = Field(..., description="Unique chunk identifier")
-    chunk_path: str = Field(..., description="Path to audio/video chunk file")
-    stream_id: str = Field(..., description="Parent stream identifier")
-    job_id: Optional[str] = Field(None, description="Optional job correlation ID")
-    language: Optional[str] = Field(None, description="Expected language code (e.g., 'en')")
+    chunkId: str = Field(..., description="Unique chunk identifier")
+    audioPath: str = Field(..., description="S3 URL to audio/video chunk file")
+    streamId: str = Field(..., description="Parent stream identifier")
+    language: Optional[str] = Field("en", description="Expected language code (e.g., 'en')")
+    options: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Transcription options")
     
 class TranscriptionSegment(BaseModel):
     id: int
@@ -82,14 +95,14 @@ class TranscriptionSegment(BaseModel):
     words: Optional[List[Dict[str, Any]]] = None
 
 class TranscriptionResult(BaseModel):
-    chunk_id: str
-    stream_id: str
-    language: str
-    language_probability: float
-    duration: float
-    segments: List[TranscriptionSegment]
-    processing_time: float
-    model_info: Dict[str, str]
+    status: str = "completed"
+    transcription: Dict[str, Any]
+    error: Optional[str] = None
+
+class TranscriptionStatus(BaseModel):
+    status: str  # "processing", "completed", "failed"
+    transcription: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -97,13 +110,13 @@ class HealthResponse(BaseModel):
     service: str = "asr_svc"
     whisper_model: str
     device: str
-    redis_connected: bool
 
 # Global variables
 app = FastAPI(title="ASR Service", version="1.0.0")
-redis_client: Optional[redis.Redis] = None
 whisper_model: Optional[WhisperModel] = None
+s3_client: Optional[S3Client] = None
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+processing_jobs: Dict[str, Dict[str, Any]] = {}  # Store job status
 
 # CORS middleware
 app.add_middleware(
@@ -114,15 +127,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def init_redis():
-    """Initialize Redis connection"""
-    global redis_client
+def init_s3():
+    """Initialize S3 client"""
+    global s3_client
     try:
-        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        await redis_client.ping()
-        logger.info("Redis connection established", redis_url=REDIS_URL)
+        s3_client = S3Client()
+        logger.info("S3 client initialized", 
+                   bucket=S3_BUCKET_NAME, 
+                   endpoint=S3_ENDPOINT_URL)
     except Exception as e:
-        logger.error("Failed to connect to Redis", error=str(e))
+        logger.error("Failed to initialize S3 client", error=str(e))
         raise
 
 def init_whisper():
@@ -174,24 +188,31 @@ def init_whisper():
         raise
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def publish_event(event_type: str, data: Dict[str, Any], correlation_id: str):
-    """Publish event to Redis with retry logic"""
+async def notify_orchestrator(stream_id: str, chunk_id: str, transcription_result: Dict[str, Any]):
+    """Notify orchestrator about transcription completion via webhook"""
     try:
-        event = {
-            "eventId": str(uuid.uuid4()),
-            "eventType": event_type,
-            "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.0",
-            "source": "asr_svc",
-            "correlationId": correlation_id,
-            "data": data
+        webhook_url = f"{ORCHESTRATOR_URL}{ASR_WEBHOOK_ENDPOINT}"
+        payload = {
+            "streamId": stream_id,
+            "chunkId": chunk_id,
+            "result": transcription_result
         }
         
-        await redis_client.publish("clipforge.events", json.dumps(event))
-        logger.info("Event published", event_type=event_type, correlation_id=correlation_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(webhook_url, json=payload) as response:
+                if response.status == 200:
+                    logger.info("Orchestrator webhook called successfully", 
+                               chunk_id=chunk_id, webhook_url=webhook_url)
+                else:
+                    error_text = await response.text()
+                    logger.error("Orchestrator webhook failed", 
+                                chunk_id=chunk_id, 
+                                status=response.status,
+                                error=error_text)
+                    
     except Exception as e:
-        logger.error("Failed to publish event", event_type=event_type, error=str(e))
-        raise
+        logger.error("Failed to notify orchestrator", chunk_id=chunk_id, error=str(e))
+        # Don't re-raise - webhook failures shouldn't fail the job
 
 def preprocess_audio(file_path: str) -> str:
     """Preprocess audio file for optimal Whisper performance"""
@@ -228,21 +249,34 @@ def extract_audio_from_video(video_path: str) -> str:
         logger.error("Failed to extract audio from video", error=str(e))
         raise
 
-async def transcribe_chunk(chunk_path: str, language: Optional[str] = None) -> Dict[str, Any]:
-    """Transcribe audio chunk using Whisper"""
+async def transcribe_chunk_from_s3(s3_url: str, chunk_id: str, language: Optional[str] = None) -> Dict[str, Any]:
+    """Transcribe audio chunk from S3 URL using Whisper"""
     start_time = datetime.utcnow()
+    local_file_path = None
+    audio_path = None
+    processed_audio_path = None
     
     try:
-        # Check if file exists
-        if not os.path.exists(chunk_path):
-            raise FileNotFoundError(f"Chunk file not found: {chunk_path}")
+        # Download file from S3 to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
+            local_file_path = temp_file.name
+        
+        # Extract S3 key from URL
+        s3_key = s3_url.split(f"{S3_BUCKET_NAME}/")[-1]
+        
+        # Download file from S3
+        success = s3_client.download_file(s3_key, local_file_path)
+        if not success:
+            raise Exception(f"Failed to download file from S3: {s3_url}")
+        
+        logger.info("Downloaded chunk from S3", chunk_id=chunk_id, s3_key=s3_key)
         
         # Determine if we need to extract audio from video
-        file_ext = Path(chunk_path).suffix.lower()
+        file_ext = Path(local_file_path).suffix.lower()
         if file_ext in ['.mp4', '.mkv', '.avi', '.mov']:
-            audio_path = extract_audio_from_video(chunk_path)
+            audio_path = extract_audio_from_video(local_file_path)
         else:
-            audio_path = chunk_path
+            audio_path = local_file_path
         
         # Preprocess audio
         processed_audio_path = preprocess_audio(audio_path)
@@ -292,14 +326,18 @@ async def transcribe_chunk(chunk_path: str, language: Optional[str] = None) -> D
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
         # Cleanup temporary files
-        if audio_path != chunk_path:
+        cleanup_files = [local_file_path, audio_path, processed_audio_path]
+        for file_path in cleanup_files:
+            if file_path and file_path != local_file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+        
+        # Clean up main temp file last
+        if local_file_path and os.path.exists(local_file_path):
             try:
-                os.remove(audio_path)
-            except:
-                pass
-        if processed_audio_path != audio_path:
-            try:
-                os.remove(processed_audio_path)
+                os.remove(local_file_path)
             except:
                 pass
         
@@ -317,7 +355,17 @@ async def transcribe_chunk(chunk_path: str, language: Optional[str] = None) -> D
         }
         
     except Exception as e:
-        logger.error("Transcription failed", chunk_path=chunk_path, error=str(e))
+        logger.error("Transcription failed", chunk_id=chunk_id, s3_url=s3_url, error=str(e))
+        
+        # Cleanup on error
+        cleanup_files = [local_file_path, audio_path, processed_audio_path]
+        for file_path in cleanup_files:
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+        
         raise
 
 async def save_transcription(chunk_id: str, transcription_data: Dict[str, Any]):
@@ -334,99 +382,86 @@ async def save_transcription(chunk_id: str, transcription_data: Dict[str, Any]):
         logger.error("Failed to save transcription", chunk_id=chunk_id, error=str(e))
         raise
 
-async def process_transcription_job(request: ChunkTranscribeRequest):
+async def process_transcription_job(request: ChunkTranscribeRequest, stream_id: str):
     """Background job to process chunk transcription"""
-    correlation_id = request.job_id or str(uuid.uuid4())
+    chunk_id = request.chunkId
+    
+    # Update job status
+    processing_jobs[chunk_id] = {
+        "status": "processing",
+        "started_at": datetime.utcnow().isoformat()
+    }
     
     async with processing_semaphore:
         try:
             logger.info("Starting transcription job", 
-                       chunk_id=request.chunk_id,
-                       correlation_id=correlation_id)
-            
-            # Publish job started event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
-                "status": "processing",
-                "service": "asr_svc",
-                "chunkId": request.chunk_id
-            }, correlation_id)
+                       chunk_id=chunk_id,
+                       s3_url=request.audioPath)
             
             # Perform transcription
-            transcription_result = await transcribe_chunk(
-                request.chunk_path, 
+            transcription_result = await transcribe_chunk_from_s3(
+                request.audioPath, 
+                chunk_id,
                 request.language
             )
             
-            # Add metadata
-            transcription_result.update({
-                "chunk_id": request.chunk_id,
-                "stream_id": request.stream_id
-            })
+            # Save transcription locally
+            await save_transcription(chunk_id, transcription_result)
             
-            # Save transcription
-            await save_transcription(request.chunk_id, transcription_result)
-            
-            # Publish transcription completed event
-            await publish_event("chunk.transcribed", {
-                "chunkId": request.chunk_id,
-                "streamId": request.stream_id,
-                "transcription": transcription_result
-            }, correlation_id)
-            
-            # Publish job completed event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
+            # Update job status
+            processing_jobs[chunk_id] = {
                 "status": "completed",
-                "service": "asr_svc",
-                "chunkId": request.chunk_id
-            }, correlation_id)
+                "transcription": transcription_result,
+                "completed_at": datetime.utcnow().isoformat()
+            }
+            
+            # Notify orchestrator via webhook
+            await notify_orchestrator(stream_id, chunk_id, transcription_result)
             
             logger.info("Transcription job completed", 
-                       chunk_id=request.chunk_id,
-                       correlation_id=correlation_id,
+                       chunk_id=chunk_id,
                        processing_time=transcription_result["processing_time"])
             
         except Exception as e:
+            error_msg = str(e)
             logger.error("Transcription job failed", 
-                        chunk_id=request.chunk_id,
-                        correlation_id=correlation_id,
-                        error=str(e))
+                        chunk_id=chunk_id,
+                        error=error_msg)
             
-            # Publish job failed event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
+            # Update job status with error
+            processing_jobs[chunk_id] = {
                 "status": "failed",
-                "service": "asr_svc",
-                "chunkId": request.chunk_id,
-                "error": str(e)
-            }, correlation_id)
+                "error": error_msg,
+                "failed_at": datetime.utcnow().isoformat()
+            }
 
 # API Endpoints
-@app.post("/transcribe", response_model=Dict[str, str])
+@app.post("/transcribe")
 async def transcribe_chunk_endpoint(
     request: ChunkTranscribeRequest,
     background_tasks: BackgroundTasks
 ):
-    """Start transcription job for a chunk"""
+    """Start transcription job for a chunk (matches orchestrator call format)"""
     try:
-        correlation_id = request.job_id or str(uuid.uuid4())
-        
-        # Validate chunk file exists
-        if not os.path.exists(request.chunk_path):
-            raise HTTPException(status_code=404, detail=f"Chunk file not found: {request.chunk_path}")
+        chunk_id = request.chunkId
+        stream_id = request.streamId
         
         # Add background task
-        background_tasks.add_task(process_transcription_job, request)
+        background_tasks.add_task(process_transcription_job, request, stream_id)
+        
+        # Initialize job tracking
+        processing_jobs[chunk_id] = {
+            "status": "accepted",
+            "accepted_at": datetime.utcnow().isoformat()
+        }
         
         logger.info("Transcription job queued", 
-                   chunk_id=request.chunk_id,
-                   correlation_id=correlation_id)
+                   chunk_id=chunk_id,
+                   audio_path=request.audioPath)
         
         return {
             "status": "accepted",
-            "chunk_id": request.chunk_id,
-            "correlation_id": correlation_id,
+            "chunkId": chunk_id,
             "message": "Transcription job started"
         }
         
@@ -434,24 +469,48 @@ async def transcribe_chunk_endpoint(
         logger.error("Failed to start transcription job", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/transcription/{chunk_id}")
-async def get_transcription(chunk_id: str):
-    """Get transcription results for a chunk"""
+@app.get("/transcription/{chunk_id}", response_model=TranscriptionStatus)
+async def get_transcription_status(chunk_id: str):
+    """Get transcription status for a chunk (matches orchestrator polling)"""
     try:
+        # Check in-memory job status first
+        if chunk_id in processing_jobs:
+            job_status = processing_jobs[chunk_id]
+            
+            if job_status["status"] == "completed":
+                return TranscriptionStatus(
+                    status="completed",
+                    transcription=job_status["transcription"]
+                )
+            elif job_status["status"] == "failed":
+                return TranscriptionStatus(
+                    status="failed",
+                    error=job_status.get("error", "Unknown error")
+                )
+            else:
+                return TranscriptionStatus(
+                    status="processing"
+                )
+        
+        # Check saved transcription file as fallback
         transcription_file = os.path.join(TRANSCRIPTION_STORAGE_PATH, f"{chunk_id}.json")
         
-        if not os.path.exists(transcription_file):
-            raise HTTPException(status_code=404, detail="Transcription not found")
+        if os.path.exists(transcription_file):
+            with open(transcription_file, 'r', encoding='utf-8') as f:
+                transcription_data = json.load(f)
+            
+            return TranscriptionStatus(
+                status="completed",
+                transcription=transcription_data
+            )
         
-        with open(transcription_file, 'r', encoding='utf-8') as f:
-            transcription_data = json.load(f)
-        
-        return transcription_data
+        # Job not found
+        raise HTTPException(status_code=404, detail="Transcription job not found")
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to retrieve transcription", chunk_id=chunk_id, error=str(e))
+        logger.error("Failed to retrieve transcription status", chunk_id=chunk_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/transcription/{chunk_id}")
@@ -477,25 +536,19 @@ async def delete_transcription(chunk_id: str):
 async def health_check():
     """Health check endpoint"""
     try:
-        # Check Redis connection
-        redis_connected = False
-        try:
-            await redis_client.ping()
-            redis_connected = True
-        except:
-            pass
-        
         # Check Whisper model
         model_loaded = whisper_model is not None
         
-        status = "healthy" if redis_connected and model_loaded else "unhealthy"
+        # Check S3 connectivity
+        s3_connected = s3_client is not None
+        
+        status = "healthy" if model_loaded and s3_connected else "unhealthy"
         
         return HealthResponse(
             status=status,
             timestamp=datetime.utcnow().isoformat(),
             whisper_model=WHISPER_MODEL_SIZE,
-            device=WHISPER_DEVICE,
-            redis_connected=redis_connected
+            device=WHISPER_DEVICE
         )
         
     except Exception as e:
@@ -534,19 +587,21 @@ async def startup_event():
     # Create storage directories
     os.makedirs(TRANSCRIPTION_STORAGE_PATH, exist_ok=True)
     
-    # Initialize connections and models
-    await init_redis()
+    # Initialize S3 client and Whisper model
+    init_s3()
     init_whisper()
     
-    logger.info("ASR Service started successfully")
+    logger.info("ASR Service started successfully", 
+               whisper_model=WHISPER_MODEL_SIZE,
+               s3_bucket=S3_BUCKET_NAME)
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down ASR Service")
     
-    if redis_client:
-        await redis_client.close()
+    # Clean up any processing jobs
+    processing_jobs.clear()
     
     logger.info("ASR Service shutdown complete")
 

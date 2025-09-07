@@ -12,7 +12,13 @@ ClipForge is a comprehensive AI-powered video processing pipeline designed to au
 
 ## 🏗️ Architecture
 
-ClipForge follows a microservices architecture with the following components:
+ClipForge follows a microservices architecture with HTTP-based communication and orchestrator-driven workflow management. The system has been refactored to use webhook-based integration between services, eliminating Redis pub/sub dependencies from processing services.
+
+### Architecture Overview
+- **Orchestrator-driven workflow**: Central job orchestration with HTTP polling and webhooks
+- **S3-based storage**: All services use S3 (LocalStack for development) for file storage
+- **Stateless services**: Processing services are stateless and horizontally scalable
+- **Webhook integration**: Services notify orchestrator via HTTP webhooks upon completion
 
 ### Core Applications
 - **Orchestrator** (`apps/orchestrator/`) - NestJS API server with job orchestration and database management
@@ -21,14 +27,27 @@ ClipForge follows a microservices architecture with the following components:
 
 ### Processing Services
 - **Ingest Service** (`services/ingest_svc/`) - VOD download and segmentation using yt-dlp
-- **ASR Service** (`services/asr_svc/`) - Speech transcription using Faster Whisper
-- **Vision Service** (`services/vision_svc/`) - Scene detection and face recognition
-- **Scoring Service** (`services/scoring_svc/`) - ML-based highlight scoring and ranking
-- **Render Service** (`services/render_svc/`) - Video rendering with captions and crops
+- **ASR Service** (`services/asr_svc/`) - Speech transcription using Faster Whisper with S3 integration
+- **Vision Service** (`services/vision_svc/`) - Scene detection and face recognition with orchestrator webhooks
+- **Scoring Service** (`services/scoring_svc/`) - ML-based highlight scoring and ranking via HTTP API
+- **Render Service** (`services/render_svc/`) - Video rendering with captions and S3 storage
 
 ### Shared Components
 - **Proto** (`packages/proto/`) - Shared JSON schemas for inter-service communication
 - **FFmpeg Presets** (`packages/ffmpeg_presets/`) - Reusable video processing configurations
+
+### Processing Workflow
+1. **Ingest**: VOD downloaded and segmented into chunks, uploaded to S3
+2. **ASR**: Audio transcription via Whisper, results sent to orchestrator via webhook
+3. **Vision**: Scene detection and face recognition, analysis sent via webhook
+4. **Scoring**: Multi-modal highlight scoring, scores returned via HTTP API
+5. **Rendering**: Video clips rendered with captions, final outputs uploaded to S3
+
+### Communication Pattern
+- **Job Creation**: Orchestrator creates jobs and sends HTTP requests to services
+- **Status Polling**: Orchestrator polls service endpoints for job status
+- **Completion Webhooks**: Services notify orchestrator when jobs complete
+- **File Storage**: All intermediate and final files stored in S3/LocalStack
 
 ## 🚀 Quick Start
 
@@ -127,7 +146,7 @@ clipforge/
 
 Key configuration options in `deploy/.env`:
 
-#### Database & Redis
+#### Database & Queue
 ```env
 DATABASE_HOST=postgres
 DATABASE_PORT=5432
@@ -135,6 +154,7 @@ DATABASE_USERNAME=clipforge
 DATABASE_PASSWORD=your_password
 DATABASE_NAME=clipforge
 
+# Redis is used only by orchestrator for job queuing
 REDIS_HOST=redis
 REDIS_PORT=6379
 QUEUE_REDIS_DB=1
@@ -142,11 +162,19 @@ QUEUE_REDIS_DB=1
 
 #### Microservices
 ```env
-INGEST_SERVICE_URL=http://ingest_svc:8000
-ASR_SERVICE_URL=http://asr_svc:8001
-VISION_SERVICE_URL=http://vision_svc:8002
-SCORING_SERVICE_URL=http://scoring_svc:8003
-RENDER_SERVICE_URL=http://render_svc:8004
+INGEST_SERVICE_URL=http://ingest_svc:8001
+ASR_SERVICE_URL=http://asr_svc:8002
+VISION_SERVICE_URL=http://vision_svc:8003
+SCORING_SERVICE_URL=http://scoring_svc:8004
+RENDER_SERVICE_URL=http://render_svc:8005
+ORCHESTRATOR_URL=http://orchestrator:3001
+
+# S3 Configuration (LocalStack for development)
+S3_BUCKET_NAME=clipforge-storage
+S3_ENDPOINT_URL=http://localstack:4566
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_DEFAULT_REGION=us-east-1
 ```
 
 #### Processing Parameters
@@ -329,8 +357,8 @@ pip uninstall package_name
 
 2. **Start development servers:**
 ```bash
-# Start infrastructure
-docker compose -f deploy/docker-compose.yml up postgres redis
+# Start infrastructure (including LocalStack for S3)
+docker compose -f deploy/docker-compose.yml up postgres redis localstack s3-init
 
 # Start orchestrator
 cd apps/orchestrator && npm run start:dev
@@ -338,7 +366,7 @@ cd apps/orchestrator && npm run start:dev
 # Start web UI
 cd apps/web && npm run dev
 
-# Start Python services
+# Start Python services (ensure S3 is ready first)
 cd services/ingest_svc && python main.py
 cd services/asr_svc && python main.py
 cd services/vision_svc && python main.py
@@ -359,6 +387,28 @@ cd apps/orchestrator && npm run test:e2e
 # Python service tests
 cd services/ingest_svc && python -m pytest
 ```
+
+### Troubleshooting
+
+#### Services Keep Restarting
+- **Cause**: Services trying to access S3 before bucket is created
+- **Solution**: Ensure `s3-init` container completes before services start
+- **Check**: `docker compose logs s3-init` to verify bucket creation
+
+#### 403 S3 Errors on Startup
+- **Cause**: Services starting before LocalStack is ready
+- **Solution**: Services now handle 403 errors gracefully during startup
+- **Check**: `docker compose logs localstack` to verify S3 service is running
+
+#### Processing Jobs Stuck
+- **Cause**: Webhook communication failure between services and orchestrator
+- **Solution**: Check service logs and ensure `ORCHESTRATOR_URL` is correct
+- **Debug**: Verify services can reach orchestrator: `curl http://orchestrator:3001/health`
+
+#### Missing Files in S3
+- **Cause**: File upload failures or incorrect S3 configuration
+- **Solution**: Check S3 bucket contents: `aws --endpoint-url=http://localhost:4566 s3 ls s3://clipforge-storage --recursive`
+- **Debug**: Verify LocalStack S3 is accessible: `curl http://localhost:4566/_localstack/health`
 
 ### Database Migrations
 
@@ -389,8 +439,9 @@ npm run typeorm:migration:revert
 ### Health Checks
 - Service health endpoints: `/health`
 - Database connectivity checks
-- Redis connectivity verification
-- External service availability
+- Redis connectivity verification (orchestrator only)
+- S3/LocalStack storage availability
+- Inter-service HTTP communication
 
 ## 🔒 Security
 

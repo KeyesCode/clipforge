@@ -15,6 +15,9 @@ import { Clip } from '../clips/clip.entity';
 export enum ChunkStatus {
   PENDING = 'pending',
   PROCESSING = 'processing',
+  TRANSCRIBED = 'transcribed',
+  ANALYZED = 'analyzed', 
+  SCORED = 'scored',
   COMPLETED = 'completed',
   FAILED = 'failed',
 }
@@ -99,6 +102,19 @@ export class Chunk {
   };
 
   @Column({ type: 'jsonb', nullable: true })
+  visionAnalysis?: {
+    sceneChanges: number[];
+    faces: Array<{
+      timestamp: number;
+      count: number;
+      emotions: Record<string, number>;
+      positions: Array<{ x: number; y: number; width: number; height: number }>;
+    }>;
+    motionIntensity: number[];
+    colorHistogram: number[][];
+  };
+
+  @Column({ type: 'jsonb', nullable: true })
   visualFeatures?: {
     sceneChanges: number[];
     faces: Array<{
@@ -112,6 +128,9 @@ export class Chunk {
   };
 
   // Scoring and ranking
+  @Column({ type: 'float', nullable: true })
+  score?: number;
+
   @Column({ type: 'float', nullable: true })
   highlightScore?: number;
 

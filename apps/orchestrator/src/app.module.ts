@@ -17,6 +17,7 @@ import { ChunksModule } from './chunks/chunks.module';
 import { ClipsModule } from './clips/clips.module';
 import { JobsModule } from './jobs/jobs.module';
 import { QueueModule } from './queue/queue.module';
+import { ProcessingModule } from './processing/processing.module';
 
 // Database entities
 import { Streamer } from './streamers/streamer.entity';
@@ -126,6 +127,7 @@ import { Queue } from './queue/queue.entity';
     ClipsModule,
     JobsModule,
     QueueModule,
+    ProcessingModule,
   ],
   controllers: [],
   providers: [S3Service],

@@ -8,6 +8,7 @@ export enum StreamStatus {
   DOWNLOADING = 'downloading',
   PROCESSING = 'processing',
   DOWNLOADED = 'downloaded',
+  PROCESSED = 'processed',
   COMPLETED = 'completed',
   FAILED = 'failed',
   PUBLISHED = 'published'
