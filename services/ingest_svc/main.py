@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -27,6 +28,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from pymediainfo import MediaInfo
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+# Import S3 utilities from local directory  
+from s3_utils import S3Client, get_s3_client
 
 # Configure structured logging
 structlog.configure(
@@ -82,7 +86,9 @@ class ChunkMetadata(BaseModel):
     start_time: float
     end_time: float
     duration: float
-    file_path: str
+    file_path: str  # Local path for processing
+    s3_url: Optional[str] = None  # S3 public URL
+    s3_key: Optional[str] = None  # S3 object key
     file_size: int
     resolution: str
     fps: float
@@ -96,8 +102,12 @@ class StreamMetadata(BaseModel):
     resolution: str
     fps: float
     file_size: int
-    download_path: str
-    thumbnail_path: Optional[str] = None
+    download_path: str  # Local path for processing
+    s3_url: Optional[str] = None  # S3 public URL
+    s3_key: Optional[str] = None  # S3 object key
+    thumbnail_path: Optional[str] = None  # Local thumbnail path
+    thumbnail_s3_url: Optional[str] = None  # S3 thumbnail URL
+    thumbnail_s3_key: Optional[str] = None  # S3 thumbnail key
 
 # FastAPI app
 app = FastAPI(
@@ -121,6 +131,7 @@ class IngestService:
     def __init__(self):
         self.download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
         self.active_downloads: Dict[str, Dict] = {}
+        self.s3_client = get_s3_client()
 
     async def initialize_redis(self):
         """Initialize Redis connection"""
@@ -254,6 +265,27 @@ class IngestService:
                 # Find thumbnail
                 thumbnail_files = list(download_dir.glob('*.jpg')) + list(download_dir.glob('*.png')) + list(download_dir.glob('*.webp'))
                 thumbnail_path = str(thumbnail_files[0]) if thumbnail_files else None
+                
+                # Upload main video to S3
+                video_s3_key = f"streams/{stream_id}/video{video_path.suffix}"
+                logger.info("Uploading video to S3", stream_id=stream_id, s3_key=video_s3_key)
+                video_s3_url = self.s3_client.upload_file(str(video_path), video_s3_key)
+                
+                if not video_s3_url:
+                    logger.error("Failed to upload video to S3", stream_id=stream_id)
+                    raise Exception("Failed to upload video to S3")
+                
+                # Upload thumbnail to S3 if exists
+                thumbnail_s3_url = None
+                thumbnail_s3_key = None
+                if thumbnail_path:
+                    thumbnail_ext = Path(thumbnail_path).suffix
+                    thumbnail_s3_key = f"streams/{stream_id}/thumbnail{thumbnail_ext}"
+                    logger.info("Uploading thumbnail to S3", stream_id=stream_id, s3_key=thumbnail_s3_key)
+                    thumbnail_s3_url = self.s3_client.upload_file(thumbnail_path, thumbnail_s3_key)
+                    
+                    if not thumbnail_s3_url:
+                        logger.warning("Failed to upload thumbnail to S3", stream_id=stream_id)
 
                 metadata = StreamMetadata(
                     stream_id=stream_id,
@@ -264,7 +296,11 @@ class IngestService:
                     fps=float(video_track.frame_rate or 30),
                     file_size=video_path.stat().st_size,
                     download_path=str(video_path),
-                    thumbnail_path=thumbnail_path
+                    s3_url=video_s3_url,
+                    s3_key=video_s3_key,
+                    thumbnail_path=thumbnail_path,
+                    thumbnail_s3_url=thumbnail_s3_url,
+                    thumbnail_s3_key=thumbnail_s3_key
                 )
 
                 logger.info("Stream downloaded successfully", 
@@ -326,6 +362,15 @@ class IngestService:
                     # Get chunk file info
                     chunk_size = chunk_path.stat().st_size
                     
+                    # Upload chunk to S3
+                    chunk_s3_key = f"chunks/{stream_metadata.stream_id}/{chunk_id}.mp4"
+                    logger.info("Uploading chunk to S3", chunk_id=chunk_id, s3_key=chunk_s3_key)
+                    chunk_s3_url = self.s3_client.upload_file(str(chunk_path), chunk_s3_key)
+                    
+                    if not chunk_s3_url:
+                        logger.error("Failed to upload chunk to S3", chunk_id=chunk_id)
+                        continue  # Skip this chunk if upload fails
+                    
                     # Get media info for chunk
                     media_info = MediaInfo.parse(str(chunk_path))
                     video_track = next((track for track in media_info.tracks if track.track_type == 'Video'), None)
@@ -337,6 +382,8 @@ class IngestService:
                         end_time=end_time,
                         duration=duration,
                         file_path=str(chunk_path),
+                        s3_url=chunk_s3_url,
+                        s3_key=chunk_s3_key,
                         file_size=chunk_size,
                         resolution=f"{video_track.width}x{video_track.height}" if video_track else stream_metadata.resolution,
                         fps=float(video_track.frame_rate or stream_metadata.fps),
@@ -502,7 +549,10 @@ class IngestService:
                 "platform": "youtube",  # TODO: Extract from URL or make configurable
                 "status": "downloaded",
                 "duration": int(stream_metadata.duration),
-                "thumbnailUrl": stream_metadata.thumbnail_path,
+                "thumbnailUrl": stream_metadata.thumbnail_s3_url,
+                "videoS3Url": stream_metadata.s3_url,
+                "videoS3Key": stream_metadata.s3_key,
+                "thumbnailS3Key": stream_metadata.thumbnail_s3_key,
                 "localVideoPath": stream_metadata.download_path,
                 "localThumbnailPath": stream_metadata.thumbnail_path,
                 "fileSize": stream_metadata.file_size,

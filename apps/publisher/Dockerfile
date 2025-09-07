@@ -7,8 +7,14 @@ WORKDIR /app
 # copy manifests (lockfile optional)
 COPY package*.json ./
 
-# small runtime compat often needed by sharp/ffmpeg-static on Alpine
-RUN apk add --no-cache libc6-compat
+# Dependencies for sharp and native modules on Alpine
+RUN apk add --no-cache \
+    libc6-compat \
+    vips-dev \
+    build-base \
+    python3 \
+    make \
+    g++
 
 # Use lockfile if present; otherwise fall back to npm install
 # (BuildKit cache flag must be immediately after RUN)
@@ -35,8 +41,10 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# same compat pkg as above (safe, tiny)
-RUN apk add --no-cache libc6-compat
+# Runtime dependencies for sharp and native modules
+RUN apk add --no-cache \
+    libc6-compat \
+    vips
 
 # copy manifests (lockfile optional)
 COPY package*.json ./

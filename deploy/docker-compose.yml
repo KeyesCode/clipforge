@@ -38,6 +38,54 @@ services:
     networks:
       - clipforge_network
 
+  localstack:
+    image: localstack/localstack:latest
+    container_name: clipforge_localstack
+    environment:
+      - SERVICES=s3
+      - DEBUG=0
+      - DATA_DIR=/var/lib/localstack/data
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-test}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-test}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-clipforge-storage}
+      - PERSISTENCE=1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - clipforge_network
+
+  # Initialize S3 bucket
+  s3-init:
+    image: amazon/aws-cli:latest
+    container_name: clipforge_s3_init
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-test}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-test}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    command: |
+      sh -c "
+        echo 'Waiting for LocalStack...' &&
+        sleep 15 &&
+        echo 'Creating S3 bucket...' &&
+        aws --endpoint-url=http://localstack:4566 s3 mb s3://clipforge-storage --region us-east-1 &&
+        echo 'S3 bucket created successfully!'
+      "
+    depends_on:
+      localstack:
+        condition: service_healthy
+    networks:
+      - clipforge_network
+
   # Core Application Services
   orchestrator:
     build:
@@ -70,6 +118,13 @@ services:
       - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS}
       - JOB_TIMEOUT=${JOB_TIMEOUT}
       - STORAGE_PATH=${STORAGE_PATH}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - S3_PUBLIC_URL=${S3_PUBLIC_URL}
+      - S3_USE_SSL=${S3_USE_SSL}
     ports:
       - "${ORCHESTRATOR_PORT}:${ORCHESTRATOR_PORT}"
       - "${WEBSOCKET_PORT}:${WEBSOCKET_PORT}"
@@ -80,6 +135,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      localstack:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${ORCHESTRATOR_PORT}/health"]
@@ -163,6 +220,13 @@ services:
       - TEMP_DIR=${TEMP_DIR}
       - MAX_DOWNLOAD_SIZE=${MAX_DOWNLOAD_SIZE}
       - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - S3_PUBLIC_URL=${S3_PUBLIC_URL}
+      - S3_USE_SSL=${S3_USE_SSL}
     ports:
       - "8001:8001"
     volumes:
@@ -171,6 +235,7 @@ services:
       - ./logs:/app/logs
     depends_on:
       - redis
+      - localstack
     networks:
       - clipforge_network
     restart: unless-stopped
@@ -357,6 +422,8 @@ volumes:
   insightface_cache:
     driver: local
   pgadmin_data:
+    driver: local
+  localstack_data:
     driver: local
 
 # Networks
