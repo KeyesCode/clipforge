@@ -87,6 +87,24 @@ export class Stream {
   @Column({ type: 'int', default: 0 })
   totalChunks: number;
 
+  @Column({ type: 'int', default: 0 })
+  processingProgress: number;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  currentStage: string; // 'downloading', 'fixing', 'chunking', 'completed'
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  progressMessage: string; // e.g., "Downloading 8.29GB... 45% complete"
+
+  @Column({ type: 'int', nullable: true })
+  estimatedTimeRemaining: number; // in seconds
+
+  @Column({ type: 'bigint', nullable: true })
+  downloadedBytes: number; // bytes downloaded so far
+
+  @Column({ type: 'bigint', nullable: true })
+  totalBytes: number; // total bytes to download
+
   @Column({ type: 'jsonb', nullable: true })
   metadata: Record<string, any>;
 

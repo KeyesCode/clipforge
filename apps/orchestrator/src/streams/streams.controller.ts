@@ -196,6 +196,28 @@ export class StreamsController {
     }
   }
 
+  @Post(':id/progress')
+  async updateProgress(
+    @Param('id') id: string,
+    @Body() progressData: {
+      processingProgress: number;
+      currentStage: string;
+      progressMessage: string;
+      estimatedTimeRemaining: number;
+      downloadedBytes: number;
+      totalBytes: number;
+    }
+  ): Promise<{ message: string }> {
+    try {
+      return await this.streamsService.updateProgress(id, progressData);
+    } catch (error) {
+      throw new HttpException(
+        'Failed to update stream progress',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+  }
+
   @Get(':id/clips')
   async getStreamClips(
     @Param('id') id: string,

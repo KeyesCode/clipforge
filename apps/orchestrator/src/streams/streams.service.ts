@@ -8,6 +8,7 @@ import { Stream, StreamStatus } from './stream.entity';
 import { Streamer } from '../streamers/streamer.entity';
 import { Chunk, ChunkStatus } from '../chunks/chunk.entity';
 import { Clip } from '../clips/clip.entity';
+import { convertPathsToPublicUrls, ENTITY_PATH_FIELDS } from '../common/utils/path-utils';
 
 @Injectable()
 export class StreamsService {
@@ -85,7 +86,27 @@ export class StreamsService {
 
     const [streams, total] = await queryBuilder.getManyAndCount();
 
-    return { streams, total };
+    // Convert local paths to public URLs for all streams
+    const streamsWithPublicUrls = streams.map(stream => {
+      const streamWithPublicUrls = convertPathsToPublicUrls(stream, ENTITY_PATH_FIELDS.stream);
+      
+      // Also convert paths in chunks and clips
+      if (streamWithPublicUrls.chunks) {
+        streamWithPublicUrls.chunks = streamWithPublicUrls.chunks.map(chunk => 
+          convertPathsToPublicUrls(chunk, ENTITY_PATH_FIELDS.chunk)
+        );
+      }
+      
+      if (streamWithPublicUrls.clips) {
+        streamWithPublicUrls.clips = streamWithPublicUrls.clips.map(clip => 
+          convertPathsToPublicUrls(clip, ENTITY_PATH_FIELDS.clip)
+        );
+      }
+      
+      return streamWithPublicUrls;
+    });
+
+    return { streams: streamsWithPublicUrls, total };
   }
 
   async findOne(id: string): Promise<Stream> {
@@ -98,7 +119,23 @@ export class StreamsService {
       throw new NotFoundException(`Stream with ID ${id} not found`);
     }
 
-    return stream;
+    // Convert local paths to public URLs
+    const streamWithPublicUrls = convertPathsToPublicUrls(stream, ENTITY_PATH_FIELDS.stream);
+    
+    // Also convert paths in chunks and clips
+    if (streamWithPublicUrls.chunks) {
+      streamWithPublicUrls.chunks = streamWithPublicUrls.chunks.map(chunk => 
+        convertPathsToPublicUrls(chunk, ENTITY_PATH_FIELDS.chunk)
+      );
+    }
+    
+    if (streamWithPublicUrls.clips) {
+      streamWithPublicUrls.clips = streamWithPublicUrls.clips.map(clip => 
+        convertPathsToPublicUrls(clip, ENTITY_PATH_FIELDS.clip)
+      );
+    }
+
+    return streamWithPublicUrls;
   }
 
   async create(createStreamDto: Partial<Stream>): Promise<Stream> {
@@ -456,5 +493,36 @@ export class StreamsService {
       status: StreamStatus.FAILED,
       errorMessage: error,
     });
+  }
+
+  async updateProgress(id: string, progressData: {
+    processingProgress: number;
+    currentStage: string;
+    progressMessage: string;
+    estimatedTimeRemaining: number;
+    downloadedBytes: number;
+    totalBytes: number;
+  }): Promise<{ message: string }> {
+    console.log(`[StreamsService] Updating progress for stream ${id}:`, progressData);
+    
+    try {
+      const updateData: Partial<Stream> = {
+        processingProgress: progressData.processingProgress,
+        currentStage: progressData.currentStage,
+        progressMessage: progressData.progressMessage,
+        estimatedTimeRemaining: progressData.estimatedTimeRemaining,
+        downloadedBytes: progressData.downloadedBytes,
+        totalBytes: progressData.totalBytes,
+        updatedAt: new Date(),
+      };
+
+      await this.streamsRepository.update(id, updateData);
+      console.log(`[StreamsService] Updated progress for stream ${id}`);
+
+      return { message: `Stream progress updated for ${id}` };
+    } catch (error) {
+      console.error(`[StreamsService] Error updating progress for stream ${id}:`, error);
+      throw error;
+    }
   }
 }

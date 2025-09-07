@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -27,6 +28,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from pymediainfo import MediaInfo
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+# Import S3 utilities from local directory  
+from s3_utils import S3Client, get_s3_client
 
 # Configure structured logging
 structlog.configure(
@@ -82,7 +86,9 @@ class ChunkMetadata(BaseModel):
     start_time: float
     end_time: float
     duration: float
-    file_path: str
+    file_path: str  # Local path for processing
+    s3_url: Optional[str] = None  # S3 public URL
+    s3_key: Optional[str] = None  # S3 object key
     file_size: int
     resolution: str
     fps: float
@@ -96,8 +102,12 @@ class StreamMetadata(BaseModel):
     resolution: str
     fps: float
     file_size: int
-    download_path: str
-    thumbnail_path: Optional[str] = None
+    download_path: str  # Local path for processing
+    s3_url: Optional[str] = None  # S3 public URL
+    s3_key: Optional[str] = None  # S3 object key
+    thumbnail_path: Optional[str] = None  # Local thumbnail path
+    thumbnail_s3_url: Optional[str] = None  # S3 thumbnail URL
+    thumbnail_s3_key: Optional[str] = None  # S3 thumbnail key
 
 # FastAPI app
 app = FastAPI(
@@ -121,6 +131,7 @@ class IngestService:
     def __init__(self):
         self.download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
         self.active_downloads: Dict[str, Dict] = {}
+        self.s3_client = get_s3_client()
 
     async def initialize_redis(self):
         """Initialize Redis connection"""
@@ -161,6 +172,55 @@ class IngestService:
         download_dir = STORAGE_PATH / "downloads" / stream_id
         download_dir.mkdir(parents=True, exist_ok=True)
 
+        # Progress tracking
+        self.active_downloads[stream_id] = {
+            'downloaded_bytes': 0,
+            'total_bytes': 0,
+            'start_time': datetime.now(timezone.utc),
+            'last_update': datetime.now(timezone.utc)
+        }
+
+        def progress_hook(d):
+            if d['status'] == 'downloading':
+                if 'total_bytes' in d and d['total_bytes']:
+                    self.active_downloads[stream_id]['total_bytes'] = d['total_bytes']
+                if 'downloaded_bytes' in d and d['downloaded_bytes']:
+                    self.active_downloads[stream_id]['downloaded_bytes'] = d['downloaded_bytes']
+                
+                # Calculate progress
+                total_bytes = self.active_downloads[stream_id]['total_bytes']
+                downloaded_bytes = self.active_downloads[stream_id]['downloaded_bytes']
+                
+                if total_bytes > 0:
+                    progress = int((downloaded_bytes / total_bytes) * 100)
+                    
+                    # Calculate ETA
+                    now = datetime.now(timezone.utc)
+                    elapsed = (now - self.active_downloads[stream_id]['start_time']).total_seconds()
+                    
+                    if elapsed > 0 and downloaded_bytes > 0:
+                        rate = downloaded_bytes / elapsed
+                        remaining_bytes = total_bytes - downloaded_bytes
+                        eta_seconds = int(remaining_bytes / rate) if rate > 0 else 0
+                    else:
+                        eta_seconds = 0
+                    
+                    # Format progress message
+                    total_gb = total_bytes / (1024**3)
+                    downloaded_gb = downloaded_bytes / (1024**3)
+                    progress_message = f"Downloading {total_gb:.1f}GB... {progress}% complete"
+                    
+                    # Update progress in database via orchestrator
+                    asyncio.create_task(self.update_stream_progress(
+                        stream_id, 
+                        progress, 
+                        'downloading', 
+                        progress_message, 
+                        eta_seconds,
+                        downloaded_bytes,
+                        total_bytes
+                    ))
+
         # yt-dlp options
         ydl_opts = {
             'format': 'best[height<=1080]',
@@ -172,6 +232,7 @@ class IngestService:
             'ignoreerrors': False,
             'no_warnings': False,
             'extractflat': False,
+            'progress_hooks': [progress_hook],
         }
 
         try:
@@ -204,6 +265,27 @@ class IngestService:
                 # Find thumbnail
                 thumbnail_files = list(download_dir.glob('*.jpg')) + list(download_dir.glob('*.png')) + list(download_dir.glob('*.webp'))
                 thumbnail_path = str(thumbnail_files[0]) if thumbnail_files else None
+                
+                # Upload main video to S3
+                video_s3_key = f"streams/{stream_id}/video{video_path.suffix}"
+                logger.info("Uploading video to S3", stream_id=stream_id, s3_key=video_s3_key)
+                video_s3_url = self.s3_client.upload_file(str(video_path), video_s3_key)
+                
+                if not video_s3_url:
+                    logger.error("Failed to upload video to S3", stream_id=stream_id)
+                    raise Exception("Failed to upload video to S3")
+                
+                # Upload thumbnail to S3 if exists
+                thumbnail_s3_url = None
+                thumbnail_s3_key = None
+                if thumbnail_path:
+                    thumbnail_ext = Path(thumbnail_path).suffix
+                    thumbnail_s3_key = f"streams/{stream_id}/thumbnail{thumbnail_ext}"
+                    logger.info("Uploading thumbnail to S3", stream_id=stream_id, s3_key=thumbnail_s3_key)
+                    thumbnail_s3_url = self.s3_client.upload_file(thumbnail_path, thumbnail_s3_key)
+                    
+                    if not thumbnail_s3_url:
+                        logger.warning("Failed to upload thumbnail to S3", stream_id=stream_id)
 
                 metadata = StreamMetadata(
                     stream_id=stream_id,
@@ -214,7 +296,11 @@ class IngestService:
                     fps=float(video_track.frame_rate or 30),
                     file_size=video_path.stat().st_size,
                     download_path=str(video_path),
-                    thumbnail_path=thumbnail_path
+                    s3_url=video_s3_url,
+                    s3_key=video_s3_key,
+                    thumbnail_path=thumbnail_path,
+                    thumbnail_s3_url=thumbnail_s3_url,
+                    thumbnail_s3_key=thumbnail_s3_key
                 )
 
                 logger.info("Stream downloaded successfully", 
@@ -276,6 +362,15 @@ class IngestService:
                     # Get chunk file info
                     chunk_size = chunk_path.stat().st_size
                     
+                    # Upload chunk to S3
+                    chunk_s3_key = f"chunks/{stream_metadata.stream_id}/{chunk_id}.mp4"
+                    logger.info("Uploading chunk to S3", chunk_id=chunk_id, s3_key=chunk_s3_key)
+                    chunk_s3_url = self.s3_client.upload_file(str(chunk_path), chunk_s3_key)
+                    
+                    if not chunk_s3_url:
+                        logger.error("Failed to upload chunk to S3", chunk_id=chunk_id)
+                        continue  # Skip this chunk if upload fails
+                    
                     # Get media info for chunk
                     media_info = MediaInfo.parse(str(chunk_path))
                     video_track = next((track for track in media_info.tracks if track.track_type == 'Video'), None)
@@ -287,6 +382,8 @@ class IngestService:
                         end_time=end_time,
                         duration=duration,
                         file_path=str(chunk_path),
+                        s3_url=chunk_s3_url,
+                        s3_key=chunk_s3_key,
                         file_size=chunk_size,
                         resolution=f"{video_track.width}x{video_track.height}" if video_track else stream_metadata.resolution,
                         fps=float(video_track.frame_rate or stream_metadata.fps),
@@ -335,6 +432,22 @@ class IngestService:
         except Exception as e:
             logger.error("Error notifying orchestrator", endpoint=endpoint, error=str(e))
 
+    async def update_stream_progress(self, stream_id: str, progress: int, stage: str, 
+                                   message: str, eta_seconds: int, 
+                                   downloaded_bytes: int, total_bytes: int):
+        """Update stream progress in orchestrator"""
+        try:
+            await self.notify_orchestrator(f"streams/{stream_id}/progress", {
+                "processingProgress": progress,
+                "currentStage": stage,
+                "progressMessage": message,
+                "estimatedTimeRemaining": eta_seconds,
+                "downloadedBytes": downloaded_bytes,
+                "totalBytes": total_bytes
+            })
+        except Exception as e:
+            logger.error("Failed to update stream progress", stream_id=stream_id, error=str(e))
+
     async def process_ingest_job(self, request: StreamIngestRequest, correlation_id: str):
         """Process complete ingestion job"""
         # Use the provided stream_id if available, otherwise generate a new one
@@ -372,13 +485,27 @@ class IngestService:
                 }
             }, correlation_id)
 
-            # Update progress
-            await self.publish_event("job.status_changed", {
-                "jobId": request.job_id,
-                "status": "processing",
-                "stage": "chunking",
-                "progress": 50
-            }, correlation_id)
+            # Update progress for fixing stage
+            await self.update_stream_progress(
+                stream_id, 
+                50, 
+                'fixing', 
+                'Fixing video format...', 
+                0,
+                stream_metadata.file_size,
+                stream_metadata.file_size
+            )
+
+            # Update progress for chunking stage
+            await self.update_stream_progress(
+                stream_id, 
+                75, 
+                'chunking', 
+                'Creating video chunks...', 
+                0,
+                stream_metadata.file_size,
+                stream_metadata.file_size
+            )
 
             # Chunk video
             chunks = await self.chunk_video(stream_metadata)
@@ -404,6 +531,17 @@ class IngestService:
                 "chunks": chunks_data
             }, correlation_id)
 
+            # Update progress for completion
+            await self.update_stream_progress(
+                stream_id, 
+                100, 
+                'completed', 
+                f'Completed! Created {len(chunks)} chunks', 
+                0,
+                stream_metadata.file_size,
+                stream_metadata.file_size
+            )
+
             # Notify orchestrator to complete ingestion
             await self.notify_orchestrator(f"streams/{stream_id}/complete-ingestion", {
                 "title": stream_metadata.title,
@@ -411,7 +549,10 @@ class IngestService:
                 "platform": "youtube",  # TODO: Extract from URL or make configurable
                 "status": "downloaded",
                 "duration": int(stream_metadata.duration),
-                "thumbnailUrl": stream_metadata.thumbnail_path,
+                "thumbnailUrl": stream_metadata.thumbnail_s3_url,
+                "videoS3Url": stream_metadata.s3_url,
+                "videoS3Key": stream_metadata.s3_key,
+                "thumbnailS3Key": stream_metadata.thumbnail_s3_key,
                 "localVideoPath": stream_metadata.download_path,
                 "localThumbnailPath": stream_metadata.thumbnail_path,
                 "fileSize": stream_metadata.file_size,
@@ -487,7 +628,7 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 @app.post("/ingest")
-async def ingest_stream(request: StreamIngestRequest, background_tasks: BackgroundTasks):
+async def ingest_stream(request: StreamIngestRequest):
     """Ingest a stream/VOD"""
     correlation_id = str(uuid.uuid4())
     
@@ -496,18 +637,17 @@ async def ingest_stream(request: StreamIngestRequest, background_tasks: Backgrou
                streamer_id=request.streamer_id,
                correlation_id=correlation_id)
     
-    # Add background task
-    background_tasks.add_task(
-        ingest_service.process_ingest_job, 
-        request, 
-        correlation_id
-    )
-    
-    return {
-        "message": "Ingestion started",
-        "correlationId": correlation_id,
-        "jobId": request.job_id
-    }
+    # Process job synchronously for debugging
+    try:
+        await ingest_service.process_ingest_job(request, correlation_id)
+        return {
+            "message": "Ingestion completed",
+            "correlationId": correlation_id,
+            "jobId": request.job_id
+        }
+    except Exception as e:
+        logger.error("Ingestion failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
 @app.get("/status/{stream_id}")
 async def get_stream_status(stream_id: str):
