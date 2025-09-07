@@ -1,4 +1,10 @@
 {
+  "name": "clipforge",
+  "version": "1.0.0",
+  "description": "ClipForge - AI-powered video content creation platform",
+  "scripts": {
+    "install:python-services": "cd services/ingest_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../asr_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../vision_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../scoring_svc && source venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt && cd ../render_svc && source venv/bin/activate && pip install -r requirements.txt"
+  },
   "devDependencies": {
     "@types/node": "^24.3.1"
   }
