@@ -420,7 +420,7 @@ class IngestService:
         """Send notification to orchestrator"""
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(f"{ORCHESTRATOR_URL}/api/{endpoint}", json=data) as response:
+                async with session.post(f"{ORCHESTRATOR_URL}/api/v1/{endpoint}", json=data) as response:
                     if response.status in [200, 201]:
                         logger.info("Orchestrator notified", endpoint=endpoint, status=response.status)
                     else:

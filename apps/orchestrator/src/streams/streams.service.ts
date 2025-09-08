@@ -345,6 +345,9 @@ export class StreamsService {
         console.log(`[StreamsService] Creating ${ingestionData.metadata.chunks.length} chunks for stream ${id}`);
         
         const chunkEntities = ingestionData.metadata.chunks.map((chunkData: any) => {
+          console.log(`[StreamsService] Chunk data:`, chunkData);
+          console.log(`[StreamsService] Chunk data s3 url:`, chunkData.s3_url);
+          console.log(`[StreamsService] Chunk data file path:`, chunkData.file_path);
           const chunk = this.chunksRepository.create({
             streamId: id,
             title: `Chunk ${Math.floor(chunkData.start_time / 60) + 1}`,
@@ -353,7 +356,8 @@ export class StreamsService {
             endTime: chunkData.end_time,
             duration: chunkData.duration,
             status: ChunkStatus.COMPLETED,
-            videoPath: chunkData.file_path,
+            videoPath: chunkData.s3_url || chunkData.file_path, // Use S3 URL if available, fallback to local path
+            audioPath: chunkData.s3_url || chunkData.file_path, // Use S3 URL for audio as well
             createdAt: new Date(),
             updatedAt: new Date(),
           });

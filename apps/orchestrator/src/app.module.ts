@@ -17,6 +17,7 @@ import { ChunksModule } from './chunks/chunks.module';
 import { ClipsModule } from './clips/clips.module';
 import { JobsModule } from './jobs/jobs.module';
 import { QueueModule } from './queue/queue.module';
+import { ProcessingModule } from './processing/processing.module';
 
 // Database entities
 import { Streamer } from './streamers/streamer.entity';
@@ -79,9 +80,14 @@ import { Queue } from './queue/queue.entity';
     // File upload configuration with Multer
     MulterModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        storage: diskStorage({
-          destination: configService.get('UPLOAD_PATH', './uploads'),
+      useFactory: (configService: ConfigService) => {
+        const uploadPath = configService.get('UPLOAD_PATH', './uploads');
+        // Ensure the path is relative to the project root, not /app
+        const resolvedPath = uploadPath.startsWith('/') ? uploadPath : join(process.cwd(), uploadPath);
+        
+        return {
+          storage: diskStorage({
+            destination: resolvedPath,
           filename: (req, file, callback) => {
             const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
             callback(null, file.fieldname + '-' + uniqueSuffix + '.' + file.originalname.split('.').pop());
@@ -107,7 +113,8 @@ import { Queue } from './queue/queue.entity';
             callback(new Error('Invalid file type'), false);
           }
         },
-      }),
+        };
+      },
       inject: [ConfigService],
     }),
 
@@ -126,6 +133,7 @@ import { Queue } from './queue/queue.entity';
     ClipsModule,
     JobsModule,
     QueueModule,
+    ProcessingModule,
   ],
   controllers: [],
   providers: [S3Service],

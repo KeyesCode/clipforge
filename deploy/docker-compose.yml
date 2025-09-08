@@ -246,8 +246,7 @@ services:
       dockerfile: Dockerfile
     container_name: clipforge_asr
     environment:
-      - REDIS_URL=${REDIS_URL}
-      - STORAGE_PATH=${STORAGE_PATH}
+      - ASR_SERVICE_PORT=8002
       - WHISPER_MODEL=${WHISPER_MODEL}
       - WHISPER_DEVICE=${WHISPER_DEVICE}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
@@ -256,15 +255,20 @@ services:
       - VAD_FILTER=${VAD_FILTER}
       - VAD_THRESHOLD=${VAD_THRESHOLD}
       - TEMP_DIR=${TEMP_DIR}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
     ports:
       - "8002:8002"
     volumes:
-      - storage_data:${STORAGE_PATH}
       - temp_data:${TEMP_DIR}
       - whisper_cache:/root/.cache/huggingface
       - ./logs:/app/logs
     depends_on:
-      - redis
+      - s3-init
     # deploy:
     #   resources:
     #     reservations:
@@ -291,6 +295,12 @@ services:
       - FRAME_SAMPLE_RATE=${FRAME_SAMPLE_RATE}
       - TEMP_DIR=${TEMP_DIR}
       - VISION_SERVICE_PORT=8003
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
     ports:
       - "8003:8003"
     volumes:
@@ -300,6 +310,7 @@ services:
       - ./logs:/app/logs
     depends_on:
       - redis
+      - s3-init
     # deploy:
     #   resources:
     #     reservations:
@@ -317,27 +328,17 @@ services:
       dockerfile: Dockerfile
     container_name: clipforge_scoring
     environment:
-      - REDIS_URL=${REDIS_URL}
-      - STORAGE_PATH=${STORAGE_PATH}
-      - SCORING_MODEL=${SCORING_MODEL}
-      - FEATURE_WEIGHTS_ASR=${FEATURE_WEIGHTS_ASR}
-      - FEATURE_WEIGHTS_VISION=${FEATURE_WEIGHTS_VISION}
-      - FEATURE_WEIGHTS_AUDIO=${FEATURE_WEIGHTS_AUDIO}
-      - MIN_CLIP_DURATION=${MIN_CLIP_DURATION}
-      - MAX_CLIP_DURATION=${MAX_CLIP_DURATION}
-      - TOP_CLIPS_COUNT=${TOP_CLIPS_COUNT}
-      - OVERLAP_THRESHOLD=${OVERLAP_THRESHOLD}
-      - TEMP_DIR=${TEMP_DIR}
-      - PORT=8004
+      - SCORING_SERVICE_PORT=8004
+      - HIGHLIGHT_THRESHOLD=${HIGHLIGHT_THRESHOLD:-0.7}
+      - MIN_HIGHLIGHT_DURATION=${MIN_HIGHLIGHT_DURATION:-5.0}
+      - MAX_HIGHLIGHT_DURATION=${MAX_HIGHLIGHT_DURATION:-60.0}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
     ports:
       - "8004:8004"
     volumes:
-      - storage_data:${STORAGE_PATH}
-      - temp_data:${TEMP_DIR}
       - ./logs:/app/logs
-      - ../services/scoring_svc/config:/app/config
     depends_on:
-      - redis
+      - s3-init
     networks:
       - clipforge_network
     restart: unless-stopped
@@ -348,28 +349,22 @@ services:
       dockerfile: Dockerfile
     container_name: clipforge_render
     environment:
-      - REDIS_URL=${REDIS_URL}
-      - STORAGE_PATH=${STORAGE_PATH}
-      - OUTPUT_FORMATS=${OUTPUT_FORMATS}
-      - CAPTION_STYLE=${CAPTION_STYLE}
-      - CAPTION_FONT=${CAPTION_FONT}
-      - CAPTION_FONT_SIZE=${CAPTION_FONT_SIZE}
-      - CAPTION_POSITION=${CAPTION_POSITION}
-      - WATERMARK_ENABLED=${WATERMARK_ENABLED}
-      - WATERMARK_PATH=${WATERMARK_PATH}
-      - WATERMARK_POSITION=${WATERMARK_POSITION}
-      - WATERMARK_OPACITY=${WATERMARK_OPACITY}
-      - TEMP_DIR=${TEMP_DIR}
       - RENDER_SERVICE_PORT=8005
+      - TEMP_DIR=${TEMP_DIR:-/tmp/clipforge_render}
+      - OUTPUT_QUALITY=${OUTPUT_QUALITY:-23}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
     ports:
       - "8005:8005"
     volumes:
-      - storage_data:${STORAGE_PATH}
-      - temp_data:${TEMP_DIR}
+      - temp_data:${TEMP_DIR:-/tmp/clipforge_render}
       - ./logs:/app/logs
-      - ../packages/ffmpeg_presets:/app/presets
     depends_on:
-      - redis
+      - s3-init
     networks:
       - clipforge_network
     restart: unless-stopped

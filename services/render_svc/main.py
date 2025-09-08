@@ -1,34 +1,21 @@
 #!/usr/bin/env python3
 """
-ClipForge Render Service
-Handles video rendering with captions, crops, and effects using FFmpeg
+ClipForge Rendering Service
+Handles video rendering with captions, effects, and S3 integration for orchestrator
 """
 
 import os
-import json
 import asyncio
-import uuid
 import tempfile
 import shutil
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
-
+from typing import Dict, List, Optional, Any
 import structlog
-import redis.asyncio as redis
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 import aiohttp
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-# Video processing imports
-import ffmpeg
-import cv2
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-import subprocess
-import tempfile
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel
+import boto3
+from botocore.exceptions import ClientError
 
 # Configure structured logging
 structlog.configure(
@@ -51,631 +38,339 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Environment configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
-SERVICE_PORT = int(os.getenv("RENDER_SERVICE_PORT", "8005"))
-CLIPS_STORAGE_PATH = os.getenv("CLIPS_STORAGE_PATH", "./data/clips")
-TEMP_RENDER_PATH = os.getenv("TEMP_RENDER_PATH", "./tmp/render")
-FONTS_PATH = os.getenv("FONTS_PATH", "/usr/share/fonts")
-MAX_CONCURRENT_RENDERS = int(os.getenv("MAX_CONCURRENT_RENDERS", "2"))
-DEFAULT_FONT_SIZE = int(os.getenv("DEFAULT_FONT_SIZE", "36"))
-DEFAULT_RESOLUTION = os.getenv("DEFAULT_RESOLUTION", "1920x1080")
+# Configuration
+RENDER_SERVICE_PORT = int(os.getenv("RENDER_SERVICE_PORT", "8005"))
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "clipforge-storage")
+TEMP_DIR = os.getenv("TEMP_DIR", "/tmp/clipforge_render")
 
-# Pydantic models
-class CaptionStyle(BaseModel):
-    font_family: str = "Arial"
-    font_size: int = DEFAULT_FONT_SIZE
-    font_color: str = "#FFFFFF"
-    background_color: str = "#000000"
-    background_opacity: float = 0.7
-    position: str = "bottom"  # top, center, bottom
-    margin: int = 50
-    max_width: Optional[int] = None
-    text_align: str = "center"  # left, center, right
-    stroke_color: Optional[str] = "#000000"
-    stroke_width: int = 2
+# Ensure temp directory exists
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-class CropSettings(BaseModel):
-    aspect_ratio: str = "16:9"  # 16:9, 9:16, 1:1, 4:3
-    position: str = "center"  # center, top, bottom, left, right
-    smart_crop: bool = True  # Use face detection for crop positioning
+# FastAPI app and job tracking
+app = FastAPI(title="ClipForge Rendering Service")
+processing_jobs: Dict[str, Dict[str, Any]] = {}
 
-class RenderSettings(BaseModel):
-    resolution: str = DEFAULT_RESOLUTION
-    fps: int = 30
-    bitrate: str = "5M"
-    codec: str = "libx264"
-    preset: str = "medium"
-    crf: int = 23
-    audio_codec: str = "aac"
-    audio_bitrate: str = "128k"
+class RenderConfig(BaseModel):
+    format: str = "mp4"
+    resolution: str = "1080p"
+    platform: str = "youtube_shorts"
 
-class ClipRenderRequest(BaseModel):
-    clip_id: str = Field(..., description="Unique clip identifier")
-    source_path: str = Field(..., description="Path to source video file")
-    start_time: float = Field(..., description="Start time in seconds")
-    end_time: float = Field(..., description="End time in seconds")
-    captions: List[Dict[str, Any]] = Field(default=[], description="Caption segments with timing")
-    caption_style: CaptionStyle = Field(default_factory=CaptionStyle)
-    crop_settings: Optional[CropSettings] = Field(None, description="Crop settings")
-    render_settings: RenderSettings = Field(default_factory=RenderSettings)
-    effects: List[str] = Field(default=[], description="Video effects to apply")
-    job_id: Optional[str] = Field(None, description="Optional job correlation ID")
+class CaptionSegment(BaseModel):
+    text: str
+    start: float
+    end: float
 
-class RenderJob(BaseModel):
-    job_id: str
-    clip_id: str
-    status: str
-    progress: float
-    output_path: Optional[str] = None
-    error_message: Optional[str] = None
-    created_at: datetime
-    completed_at: Optional[datetime] = None
+class CaptionConfig(BaseModel):
+    segments: List[CaptionSegment]
+    style: str = "gaming"
 
-class HealthResponse(BaseModel):
-    status: str
-    timestamp: str
-    service: str = "render_svc"
-    ffmpeg_available: bool
-    redis_connected: bool
-    temp_storage_available: bool
+class RenderRequest(BaseModel):
+    clipId: str
+    sourceVideo: str  # S3 URL
+    startTime: float
+    duration: float
+    renderConfig: RenderConfig
+    captions: CaptionConfig
+    effects: List[Dict[str, Any]] = []
 
-# Global variables
-app = FastAPI(title="Render Service", version="1.0.0")
-redis_client: Optional[redis.Redis] = None
-render_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RENDERS)
-active_jobs: Dict[str, RenderJob] = {}
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-async def init_redis():
-    """Initialize Redis connection"""
-    global redis_client
-    try:
-        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        await redis_client.ping()
-        logger.info("Redis connection established", redis_url=REDIS_URL)
-    except Exception as e:
-        logger.error("Failed to connect to Redis", error=str(e))
-        raise
-
-def check_ffmpeg():
-    """Check if FFmpeg is available"""
-    try:
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def publish_event(event_type: str, data: Dict[str, Any], correlation_id: str):
-    """Publish event to Redis with retry logic"""
-    try:
-        event = {
-            "eventId": str(uuid.uuid4()),
-            "eventType": event_type,
-            "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.0",
-            "source": "render_svc",
-            "correlationId": correlation_id,
-            "data": data
-        }
-        
-        await redis_client.publish("clipforge.events", json.dumps(event))
-        logger.info("Event published", event_type=event_type, correlation_id=correlation_id)
-    except Exception as e:
-        logger.error("Failed to publish event", event_type=event_type, error=str(e))
-        raise
-
-def create_subtitle_file(captions: List[Dict[str, Any]], temp_dir: str) -> str:
-    """Create SRT subtitle file from captions"""
-    subtitle_path = os.path.join(temp_dir, "subtitles.srt")
-    
-    with open(subtitle_path, 'w', encoding='utf-8') as f:
-        for i, caption in enumerate(captions, 1):
-            start_time = caption.get('start_time', 0)
-            end_time = caption.get('end_time', start_time + 3)
-            text = caption.get('text', '')
-            
-            # Convert seconds to SRT time format
-            start_srt = seconds_to_srt_time(start_time)
-            end_srt = seconds_to_srt_time(end_time)
-            
-            f.write(f"{i}\n")
-            f.write(f"{start_srt} --> {end_srt}\n")
-            f.write(f"{text}\n\n")
-    
-    return subtitle_path
-
-def seconds_to_srt_time(seconds: float) -> str:
-    """Convert seconds to SRT time format (HH:MM:SS,mmm)"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int((seconds % 1) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-
-def calculate_crop_dimensions(source_width: int, source_height: int, aspect_ratio: str) -> Tuple[int, int, int, int]:
-    """Calculate crop dimensions based on aspect ratio"""
-    ar_map = {
-        "16:9": (16, 9),
-        "9:16": (9, 16),
-        "1:1": (1, 1),
-        "4:3": (4, 3),
-        "21:9": (21, 9)
-    }
-    
-    if aspect_ratio not in ar_map:
-        return 0, 0, source_width, source_height
-    
-    target_w_ratio, target_h_ratio = ar_map[aspect_ratio]
-    
-    # Calculate target dimensions while maintaining aspect ratio
-    target_aspect = target_w_ratio / target_h_ratio
-    source_aspect = source_width / source_height
-    
-    if source_aspect > target_aspect:
-        # Source is wider, crop width
-        new_width = int(source_height * target_aspect)
-        new_height = source_height
-        x = (source_width - new_width) // 2
-        y = 0
-    else:
-        # Source is taller, crop height
-        new_width = source_width
-        new_height = int(source_width / target_aspect)
-        x = 0
-        y = (source_height - new_height) // 2
-    
-    return x, y, new_width, new_height
-
-def create_ffmpeg_filters(request: ClipRenderRequest, video_info: Dict[str, Any]) -> List[str]:
-    """Create FFmpeg filter chain based on render settings"""
-    filters = []
-    
-    # Crop filter
-    if request.crop_settings:
-        source_width = video_info.get('width', 1920)
-        source_height = video_info.get('height', 1080)
-        
-        x, y, width, height = calculate_crop_dimensions(
-            source_width, source_height, request.crop_settings.aspect_ratio
+class S3Client:
+    def __init__(self):
+        self.s3_client = boto3.client(
+            's3',
+            endpoint_url=os.getenv('S3_ENDPOINT_URL'),
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
         )
-        
-        if x > 0 or y > 0 or width != source_width or height != source_height:
-            filters.append(f"crop={width}:{height}:{x}:{y}")
-    
-    # Scale filter for resolution
-    target_width, target_height = map(int, request.render_settings.resolution.split('x'))
-    filters.append(f"scale={target_width}:{target_height}:flags=lanczos")
-    
-    # Effects
-    for effect in request.effects:
-        if effect == "stabilize":
-            filters.append("vidstabdetect=stepsize=6:shakiness=10:accuracy=15")
-        elif effect == "denoise":
-            filters.append("nlmeans=s=2.0")
-        elif effect == "sharpen":
-            filters.append("unsharp=5:5:1.0:5:5:0.0")
-        elif effect == "brightness":
-            filters.append("eq=brightness=0.1")
-        elif effect == "contrast":
-            filters.append("eq=contrast=1.2")
-    
-    # FPS filter
-    if request.render_settings.fps != video_info.get('fps', 30):
-        filters.append(f"fps={request.render_settings.fps}")
-    
-    return filters
+        self.bucket_name = S3_BUCKET_NAME
 
-def get_video_info(video_path: str) -> Dict[str, Any]:
-    """Get video information using FFprobe"""
-    try:
-        probe = ffmpeg.probe(video_path)
-        video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
-        
-        if not video_stream:
-            raise ValueError("No video stream found")
-        
-        return {
-            'width': int(video_stream['width']),
-            'height': int(video_stream['height']),
-            'fps': eval(video_stream['r_frame_rate']),
-            'duration': float(video_stream.get('duration', 0)),
-            'codec': video_stream['codec_name']
-        }
-    except Exception as e:
-        logger.error("Failed to get video info", video_path=video_path, error=str(e))
-        raise
-
-async def render_clip(request: ClipRenderRequest, progress_callback=None) -> str:
-    """Render clip with all specified settings"""
-    temp_dir = tempfile.mkdtemp(dir=TEMP_RENDER_PATH)
-    
-    try:
-        # Generate output filename
-        output_filename = f"{request.clip_id}_{int(datetime.utcnow().timestamp())}.mp4"
-        output_path = os.path.join(CLIPS_STORAGE_PATH, output_filename)
-        
-        # Ensure output directory exists
-        os.makedirs(CLIPS_STORAGE_PATH, exist_ok=True)
-        
-        # Get video information
-        video_info = get_video_info(request.source_path)
-        
-        # Create subtitle file if captions provided
-        subtitle_path = None
-        if request.captions:
-            subtitle_path = create_subtitle_file(request.captions, temp_dir)
-        
-        # Build FFmpeg command
-        input_stream = ffmpeg.input(
-            request.source_path, 
-            ss=request.start_time, 
-            t=request.end_time - request.start_time
-        )
-        
-        # Apply video filters
-        video_filters = create_ffmpeg_filters(request, video_info)
-        video = input_stream['v']
-        
-        if video_filters:
-            # Apply scale filter for resolution
-            target_width, target_height = map(int, request.render_settings.resolution.split('x'))
-            video = video.filter('scale', target_width, target_height)
-        
-        # Add subtitles if available
-        if subtitle_path:
-            # Create subtitle filter with styling
-            style = request.caption_style
-            subtitle_filter = f"subtitles={subtitle_path}:force_style='FontName={style.font_family},FontSize={style.font_size},PrimaryColour=&H{style.font_color[1:]},BackColour=&H{style.background_color[1:]},Bold=1,Outline=2'"
-            video = video.filter('subtitles', subtitle_path, force_style=subtitle_filter)
-        
-        # Audio stream
-        audio = input_stream['a']
-        
-        # Output with settings
-        output = ffmpeg.output(
-            video, audio, output_path,
-            vcodec=request.render_settings.codec,
-            acodec=request.render_settings.audio_codec,
-            preset=request.render_settings.preset,
-            crf=request.render_settings.crf,
-            video_bitrate=request.render_settings.bitrate,
-            audio_bitrate=request.render_settings.audio_bitrate,
-            movflags='faststart'  # Optimize for web streaming
-        )
-        
-        # Run FFmpeg
-        logger.info("Starting FFmpeg render", 
-                   clip_id=request.clip_id,
-                   output_path=output_path)
-        
-        if progress_callback:
-            await progress_callback(0.1, "Starting render")
-        
-        # Execute with progress monitoring
-        process = await asyncio.create_subprocess_exec(
-            *ffmpeg.compile(output),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            error_msg = stderr.decode() if stderr else "Unknown FFmpeg error"
-            logger.error("FFmpeg render failed", 
-                        clip_id=request.clip_id, 
-                        error=error_msg)
-            raise Exception(f"Render failed: {error_msg}")
-        
-        if progress_callback:
-            await progress_callback(1.0, "Render complete")
-        
-        logger.info("Clip rendered successfully", 
-                   clip_id=request.clip_id,
-                   output_path=output_path,
-                   file_size=os.path.getsize(output_path))
-        
-        return output_path
-        
-    finally:
-        # Cleanup temp directory
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-
-async def process_render_job(request: ClipRenderRequest):
-    """Background job to process clip rendering"""
-    correlation_id = request.job_id or str(uuid.uuid4())
-    job = RenderJob(
-        job_id=correlation_id,
-        clip_id=request.clip_id,
-        status="processing",
-        progress=0.0,
-        created_at=datetime.utcnow()
-    )
-    active_jobs[correlation_id] = job
-    
-    async def update_progress(progress: float, message: str):
-        job.progress = progress
-        active_jobs[correlation_id] = job
-        await publish_event("job.progress_updated", {
-            "jobId": correlation_id,
-            "progress": progress,
-            "message": message
-        }, correlation_id)
-    
-    async with render_semaphore:
+    def download_file(self, s3_key: str, local_path: str) -> bool:
+        """Download file from S3 to local path"""
         try:
-            logger.info("Starting render job", 
-                       clip_id=request.clip_id,
-                       correlation_id=correlation_id)
-            
-            # Publish job started event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
-                "status": "processing",
-                "service": "render_svc",
-                "clipId": request.clip_id
-            }, correlation_id)
-            
-            # Validate source file
-            if not os.path.exists(request.source_path):
-                raise FileNotFoundError(f"Source file not found: {request.source_path}")
-            
-            await update_progress(0.1, "Validating source file")
-            
-            # Render clip
-            output_path = await render_clip(request, update_progress)
-            
-            job.status = "completed"
-            job.output_path = output_path
-            job.completed_at = datetime.utcnow()
-            job.progress = 1.0
-            active_jobs[correlation_id] = job
-            
-            # Publish clip rendered event
-            await publish_event("clip.rendered", {
-                "clipId": request.clip_id,
-                "outputPath": output_path,
-                "fileSize": os.path.getsize(output_path),
-                "duration": request.end_time - request.start_time
-            }, correlation_id)
-            
-            # Publish job completed event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
-                "status": "completed",
-                "service": "render_svc",
-                "clipId": request.clip_id
-            }, correlation_id)
-            
-            logger.info("Render job completed", 
-                       clip_id=request.clip_id,
-                       correlation_id=correlation_id,
-                       output_path=output_path)
-            
-        except Exception as e:
-            job.status = "failed"
-            job.error_message = str(e)
-            job.completed_at = datetime.utcnow()
-            active_jobs[correlation_id] = job
-            
-            logger.error("Render job failed", 
-                        clip_id=request.clip_id,
-                        correlation_id=correlation_id,
-                        error=str(e))
-            
-            # Publish job failed event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
-                "status": "failed",
-                "service": "render_svc",
-                "clipId": request.clip_id,
-                "error": str(e)
-            }, correlation_id)
+            self.s3_client.download_file(self.bucket_name, s3_key, local_path)
+            logger.info("Downloaded from S3", s3_key=s3_key, local_path=local_path)
+            return True
+        except ClientError as e:
+            logger.error("S3 download failed", s3_key=s3_key, error=str(e))
+            return False
 
-# API Endpoints
-@app.post("/render", response_model=Dict[str, str])
+    def upload_file(self, local_path: str, s3_key: str) -> bool:
+        """Upload file from local path to S3"""
+        try:
+            self.s3_client.upload_file(local_path, self.bucket_name, s3_key)
+            logger.info("Uploaded to S3", local_path=local_path, s3_key=s3_key)
+            return True
+        except ClientError as e:
+            logger.error("S3 upload failed", local_path=local_path, error=str(e))
+            return False
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "render_svc"
+    }
+
+@app.post("/render")
 async def render_clip_endpoint(
-    request: ClipRenderRequest,
+    request: RenderRequest,
     background_tasks: BackgroundTasks
 ):
-    """Start clip rendering job"""
+    """Start render job for clip (matches orchestrator call format)"""
     try:
-        correlation_id = request.job_id or str(uuid.uuid4())
-        
-        # Validate source file exists
-        if not os.path.exists(request.source_path):
-            raise HTTPException(status_code=404, detail=f"Source file not found: {request.source_path}")
+        clip_id = request.clipId
         
         # Add background task
         background_tasks.add_task(process_render_job, request)
         
-        logger.info("Render job queued", 
-                   clip_id=request.clip_id,
-                   correlation_id=correlation_id)
-        
-        return {
+        # Initialize job tracking
+        processing_jobs[clip_id] = {
             "status": "accepted",
-            "clip_id": request.clip_id,
-            "correlation_id": correlation_id,
-            "message": "Render job started"
+            "accepted_at": datetime.utcnow().isoformat()
         }
         
+        logger.info("Render job accepted", clip_id=clip_id, duration=request.duration)
+        return {"status": "accepted", "clipId": clip_id}
+        
     except Exception as e:
-        logger.error("Failed to start render job", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Failed to accept render job", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to accept render job")
 
-@app.get("/job/{job_id}")
-async def get_job_status(job_id: str):
-    """Get render job status"""
-    if job_id not in active_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+@app.get("/render/{clip_id}")
+async def get_render_status(clip_id: str):
+    """Get render status for clip (polling endpoint for orchestrator)"""
+    if clip_id not in processing_jobs:
+        raise HTTPException(status_code=404, detail="Clip not found")
     
-    job = active_jobs[job_id]
-    return job.dict()
+    return processing_jobs[clip_id]
 
-@app.get("/clip/{clip_id}")
-async def get_rendered_clip(clip_id: str):
-    """Get information about rendered clip"""
+async def process_render_job(request: RenderRequest):
+    """Background task to process rendering"""
+    clip_id = request.clipId
+    
     try:
-        # Search for clip files
-        clip_files = [f for f in os.listdir(CLIPS_STORAGE_PATH) if f.startswith(clip_id)]
+        # Update status
+        processing_jobs[clip_id]["status"] = "processing"
+        processing_jobs[clip_id]["started_at"] = datetime.utcnow().isoformat()
         
-        if not clip_files:
-            raise HTTPException(status_code=404, detail="Clip not found")
+        # Process the render
+        result = await render_video_clip(request)
         
-        clip_file = clip_files[0]
-        clip_path = os.path.join(CLIPS_STORAGE_PATH, clip_file)
+        # Update with results
+        processing_jobs[clip_id].update({
+            "status": "completed",
+            "completed_at": datetime.utcnow().isoformat(),
+            **result
+        })
         
-        # Get file info
-        file_stat = os.stat(clip_path)
-        video_info = get_video_info(clip_path)
+        # Notify orchestrator via webhook
+        await notify_orchestrator_webhook(clip_id, result)
         
-        return {
-            "clip_id": clip_id,
-            "file_path": clip_path,
-            "file_size": file_stat.st_size,
-            "created_at": datetime.fromtimestamp(file_stat.st_ctime).isoformat(),
-            "duration": video_info.get('duration', 0),
-            "resolution": f"{video_info.get('width', 0)}x{video_info.get('height', 0)}",
-            "fps": video_info.get('fps', 0)
-        }
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error("Failed to get clip info", clip_id=clip_id, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Render job failed", clip_id=clip_id, error=str(e))
+        processing_jobs[clip_id].update({
+            "status": "failed",
+            "error": str(e),
+            "failed_at": datetime.utcnow().isoformat()
+        })
 
-@app.delete("/clip/{clip_id}")
-async def delete_rendered_clip(clip_id: str):
-    """Delete rendered clip"""
+async def render_video_clip(request: RenderRequest) -> Dict[str, Any]:
+    """Core video rendering logic"""
+    import ffmpeg
+    
+    s3_client = S3Client()
+    clip_id = request.clipId
+    
+    # Create working directory
+    work_dir = os.path.join(TEMP_DIR, clip_id)
+    os.makedirs(work_dir, exist_ok=True)
+    
     try:
-        # Find clip files
-        clip_files = [f for f in os.listdir(CLIPS_STORAGE_PATH) if f.startswith(clip_id)]
+        # Download source video from S3
+        source_s3_key = request.sourceVideo.split(f"{S3_BUCKET_NAME}/")[-1]
+        source_local_path = os.path.join(work_dir, "source.mp4")
         
-        if not clip_files:
-            raise HTTPException(status_code=404, detail="Clip not found")
+        success = s3_client.download_file(source_s3_key, source_local_path)
+        if not success:
+            raise Exception(f"Failed to download source video: {source_s3_key}")
         
-        deleted_files = []
-        for clip_file in clip_files:
-            clip_path = os.path.join(CLIPS_STORAGE_PATH, clip_file)
-            os.remove(clip_path)
-            deleted_files.append(clip_file)
+        # Generate output paths
+        output_filename = f"{clip_id}.mp4"
+        thumbnail_filename = f"{clip_id}_thumbnail.jpg"
+        output_local_path = os.path.join(work_dir, output_filename)
+        thumbnail_local_path = os.path.join(work_dir, thumbnail_filename)
         
-        logger.info("Clip deleted", clip_id=clip_id, files=deleted_files)
-        
-        return {
-            "status": "deleted",
-            "clip_id": clip_id,
-            "deleted_files": deleted_files
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to delete clip", clip_id=clip_id, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
-    try:
-        # Check Redis connection
-        redis_connected = False
-        try:
-            await redis_client.ping()
-            redis_connected = True
-        except:
-            pass
-        
-        # Check FFmpeg
-        ffmpeg_available = check_ffmpeg()
-        
-        # Check temp storage
-        temp_storage_available = os.path.exists(TEMP_RENDER_PATH) and os.access(TEMP_RENDER_PATH, os.W_OK)
-        
-        status = "healthy" if redis_connected and ffmpeg_available and temp_storage_available else "unhealthy"
-        
-        return HealthResponse(
-            status=status,
-            timestamp=datetime.utcnow().isoformat(),
-            ffmpeg_available=ffmpeg_available,
-            redis_connected=redis_connected,
-            temp_storage_available=temp_storage_available
+        # Extract and render video segment
+        await extract_video_segment(
+            source_local_path,
+            output_local_path,
+            request.startTime,
+            request.duration,
+            request.renderConfig
         )
         
-    except Exception as e:
-        logger.error("Health check failed", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/stats")
-async def get_service_stats():
-    """Get service statistics"""
-    try:
-        # Count rendered clips
-        clip_count = 0
-        total_size = 0
-        if os.path.exists(CLIPS_STORAGE_PATH):
-            for filename in os.listdir(CLIPS_STORAGE_PATH):
-                if filename.endswith('.mp4'):
-                    clip_count += 1
-                    total_size += os.path.getsize(os.path.join(CLIPS_STORAGE_PATH, filename))
+        # Add captions if provided
+        if request.captions.segments:
+            captioned_path = os.path.join(work_dir, f"{clip_id}_captioned.mp4")
+            await add_captions_to_video(
+                output_local_path,
+                captioned_path, 
+                request.captions,
+                request.startTime
+            )
+            output_local_path = captioned_path
+        
+        # Generate thumbnail
+        await generate_thumbnail(output_local_path, thumbnail_local_path)
+        
+        # Upload to S3
+        output_s3_key = f"rendered/{output_filename}"
+        thumbnail_s3_key = f"thumbnails/{thumbnail_filename}"
+        
+        output_upload_success = s3_client.upload_file(output_local_path, output_s3_key)
+        thumbnail_upload_success = s3_client.upload_file(thumbnail_local_path, thumbnail_s3_key)
+        
+        if not output_upload_success:
+            raise Exception("Failed to upload rendered video to S3")
+        
+        # Get file metadata
+        file_size = os.path.getsize(output_local_path)
         
         return {
-            "service": "render_svc",
-            "ffmpeg_available": check_ffmpeg(),
-            "max_concurrent_renders": MAX_CONCURRENT_RENDERS,
-            "active_jobs": len(active_jobs),
-            "total_clips": clip_count,
-            "total_storage_size": total_size,
-            "clips_path": CLIPS_STORAGE_PATH,
-            "temp_path": TEMP_RENDER_PATH
+            "outputPath": f"s3://{S3_BUCKET_NAME}/{output_s3_key}",
+            "thumbnailPath": f"s3://{S3_BUCKET_NAME}/{thumbnail_s3_key}" if thumbnail_upload_success else None,
+            "metadata": {
+                "duration": request.duration,
+                "resolution": request.renderConfig.resolution,
+                "fileSize": file_size,
+                "platform": request.renderConfig.platform
+            }
         }
         
+    finally:
+        # Cleanup working directory
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+async def extract_video_segment(
+    source_path: str,
+    output_path: str, 
+    start_time: float,
+    duration: float,
+    render_config: RenderConfig
+):
+    """Extract video segment using FFmpeg"""
+    import ffmpeg
+    
+    # Platform-specific resolution mapping
+    resolution_map = {
+        "youtube_shorts": "1080x1920",
+        "tiktok": "1080x1920", 
+        "instagram_reels": "1080x1920",
+        "1080p": "1920x1080",
+        "720p": "1280x720"
+    }
+    
+    target_resolution = resolution_map.get(render_config.platform, render_config.resolution)
+    width, height = map(int, target_resolution.split('x'))
+    
+    try:
+        # FFmpeg pipeline for video extraction and formatting
+        stream = ffmpeg.input(source_path, ss=start_time, t=duration)
+        stream = ffmpeg.filter(stream, 'scale', width, height)
+        stream = ffmpeg.output(stream, output_path, 
+                             vcodec='libx264',
+                             acodec='aac',
+                             crf=23,
+                             preset='medium')
+        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        
+    except ffmpeg.Error as e:
+        logger.error("FFmpeg error during extraction", error=str(e))
+        raise Exception(f"Video extraction failed: {e}")
+
+async def add_captions_to_video(
+    input_path: str,
+    output_path: str,
+    captions: CaptionConfig,
+    video_start_time: float
+):
+    """Add captions overlay to video"""
+    import ffmpeg
+    
+    # Create subtitle file
+    srt_path = input_path.replace('.mp4', '.srt')
+    
+    with open(srt_path, 'w') as f:
+        for i, segment in enumerate(captions.segments, 1):
+            # Adjust timing relative to video start
+            start_adjusted = max(0, segment.start - video_start_time)
+            end_adjusted = max(0, segment.end - video_start_time)
+            
+            if start_adjusted >= 0 and end_adjusted > start_adjusted:
+                f.write(f"{i}\n")
+                f.write(f"{format_srt_time(start_adjusted)} --> {format_srt_time(end_adjusted)}\n")
+                f.write(f"{segment.text}\n\n")
+    
+    try:
+        # Apply captions with gaming style
+        stream = ffmpeg.input(input_path)
+        stream = ffmpeg.filter(stream, 'subtitles', srt_path,
+                             force_style='FontName=Arial Bold,FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2')
+        stream = ffmpeg.output(stream, output_path,
+                             vcodec='libx264',
+                             acodec='aac', 
+                             crf=23)
+        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        
+        # Cleanup subtitle file
+        os.remove(srt_path)
+        
+    except ffmpeg.Error as e:
+        logger.error("FFmpeg error during caption overlay", error=str(e))
+        raise Exception(f"Caption overlay failed: {e}")
+
+async def generate_thumbnail(video_path: str, thumbnail_path: str):
+    """Generate video thumbnail"""
+    import ffmpeg
+    
+    try:
+        stream = ffmpeg.input(video_path, ss=1)  # Take frame at 1 second
+        stream = ffmpeg.filter(stream, 'scale', 480, 270)  # Thumbnail size
+        stream = ffmpeg.output(stream, thumbnail_path, vframes=1)
+        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        
+    except ffmpeg.Error as e:
+        logger.error("Thumbnail generation failed", error=str(e))
+        # Don't fail the job if thumbnail fails
+        pass
+
+def format_srt_time(seconds: float) -> str:
+    """Format time for SRT subtitle format"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    millisecs = int((secs % 1) * 1000)
+    secs = int(secs)
+    
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
+
+async def notify_orchestrator_webhook(clip_id: str, result: Dict[str, Any]):
+    """Notify orchestrator of completed rendering"""
+    try:
+        webhook_url = f"{ORCHESTRATOR_URL}/api/v1/processing/webhooks/rendering-complete"
+        
+        async with aiohttp.ClientSession() as session:
+            await session.post(webhook_url, json={
+                "clipId": clip_id,
+                "result": result
+            })
+        
+        logger.info("Rendering webhook sent", clip_id=clip_id)
     except Exception as e:
-        logger.error("Failed to get stats", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    """Initialize service on startup"""
-    logger.info("Starting Render Service", port=SERVICE_PORT)
-    
-    # Create storage directories
-    os.makedirs(CLIPS_STORAGE_PATH, exist_ok=True)
-    os.makedirs(TEMP_RENDER_PATH, exist_ok=True)
-    
-    # Initialize Redis connection
-    await init_redis()
-    
-    # Check FFmpeg availability
-    if not check_ffmpeg():
-        logger.warning("FFmpeg not available - rendering will fail")
-    
-    logger.info("Render Service started successfully")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("Shutting down Render Service")
-    
-    if redis_client:
-        await redis_client.close()
-    
-    logger.info("Render Service shutdown complete")
+        logger.error("Failed to send rendering webhook", clip_id=clip_id, error=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)
+    uvicorn.run(app, host="0.0.0.0", port=RENDER_SERVICE_PORT)

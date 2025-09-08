@@ -14,6 +14,7 @@ import { Chunk } from '../chunks/chunk.entity';
 
 export enum ClipStatus {
   PENDING = 'pending',
+  PENDING_RENDER = 'pending_render',
   RENDERING = 'rendering',
   RENDERED = 'rendered',
   PUBLISHED = 'published',
@@ -91,6 +92,9 @@ export class Clip {
   @Column({ name: 'chunk_id', nullable: true })
   chunkId?: string;
 
+  @Column({ name: 'source_chunk_id', nullable: true })
+  sourceChunkId?: string;
+
   @Column({ length: 255 })
   title: string;
 
@@ -116,6 +120,9 @@ export class Clip {
   duration: number;
 
   // Scoring and ranking
+  @Column({ name: 'score', type: 'float', nullable: true })
+  score?: number;
+
   @Column({ name: 'highlight_score', type: 'float', default: 0 })
   @Index()
   highlightScore: number;
@@ -179,6 +186,9 @@ export class Clip {
 
   @Column({ name: 'published_at', type: 'timestamp', nullable: true })
   publishedAt?: Date;
+
+  @Column({ name: 'rendered_at', type: 'timestamp', nullable: true })
+  renderedAt?: Date;
 
   // User review and approval
   @Column({ name: 'reviewed_by', nullable: true })

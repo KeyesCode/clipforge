@@ -8,10 +8,11 @@ import { QueueController } from './queue.controller';
 import { IngestQueueProcessor, ProcessingQueueProcessor } from './queue.processor';
 import { Job } from '../jobs/job.entity';
 import { Stream } from '../streams/stream.entity';
+import { Chunk } from '../chunks/chunk.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Queue, Job, Stream]),
+    TypeOrmModule.forFeature([Queue, Job, Stream, Chunk]),
     HttpModule,
     BullModule.registerQueue(
       { name: 'ingest' },

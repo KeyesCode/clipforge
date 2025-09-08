@@ -2,6 +2,7 @@
 """
 ClipForge Vision Service
 Handles scene detection, face recognition, and visual analysis using PySceneDetect and InsightFace
+Integrated with ClipForge orchestrator webhook system
 """
 
 import os
@@ -10,17 +11,20 @@ import asyncio
 import uuid
 import tempfile
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
 import structlog
-import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import aiohttp
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+# S3 integration
+from s3_utils.s3_client import S3Client
 
 # Computer vision imports
 import cv2
@@ -58,22 +62,31 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Environment configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://:redis_secure_password_2024@redis:6379")
 SERVICE_PORT = int(os.getenv("VISION_SERVICE_PORT", "8003"))
-CHUNK_STORAGE_PATH = os.getenv("CHUNK_STORAGE_PATH", "./data/chunks")
 ANALYSIS_STORAGE_PATH = os.getenv("ANALYSIS_STORAGE_PATH", "./data/analysis")
 FACE_MODEL_NAME = os.getenv("FACE_MODEL_NAME", "buffalo_l")
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_VISION_JOBS", "2"))
 SCENE_THRESHOLD = float(os.getenv("SCENE_THRESHOLD", "30.0"))
 MIN_SCENE_LENGTH = float(os.getenv("MIN_SCENE_LENGTH", "3.0"))
 
+# Orchestrator webhook configuration
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
+VISION_WEBHOOK_ENDPOINT = "/api/v1/processing/webhooks/vision-complete"
+
+# S3 configuration
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "clipforge-storage")
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "http://localhost:4566")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "test")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "test")
+AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+
 # Pydantic models
 class ChunkAnalysisRequest(BaseModel):
-    chunk_id: str = Field(..., description="Unique chunk identifier")
-    chunk_path: str = Field(..., description="Path to video chunk file")
-    stream_id: str = Field(..., description="Parent stream identifier")
-    job_id: Optional[str] = Field(None, description="Optional job correlation ID")
-    analysis_types: List[str] = Field(default=["scenes", "faces"], description="Types of analysis to perform")
+    chunkId: str = Field(..., description="Unique chunk identifier")
+    videoPath: str = Field(..., description="S3 URL to video chunk file")
+    streamId: str = Field(..., description="Parent stream identifier")
+    analysisType: str = Field("full", description="Type of analysis to perform")
+    options: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Analysis options")
 
 class SceneInfo(BaseModel):
     scene_id: int
@@ -113,21 +126,56 @@ class VisionAnalysisResult(BaseModel):
     processing_time: float
     video_metadata: Dict[str, Any]
 
+class VisionAnalysisResponse(BaseModel):
+    status: str = "completed"
+    analysis: Dict[str, Any]
+    error: Optional[str] = None
+
+class VisionAnalysisStatus(BaseModel):
+    status: str  # "processing", "completed", "failed"
+    analysis: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
 class HealthResponse(BaseModel):
     status: str
     timestamp: str
     service: str = "vision_svc"
     face_model: str
-    redis_connected: bool
     gpu_available: bool
 
 # Global variables
-app = FastAPI(title="Vision Service", version="1.0.0")
-redis_client: Optional[redis.Redis] = None
 face_analyzer: Optional[FaceAnalysis] = None
+s3_client: Optional[S3Client] = None
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+processing_jobs: Dict[str, Dict[str, Any]] = {}  # Store job status
 
-# CORS middleware
+# Lifespan event handler
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting Vision Service", port=SERVICE_PORT)
+    
+    # Create storage directories
+    os.makedirs(ANALYSIS_STORAGE_PATH, exist_ok=True)
+    
+    # Initialize S3 client
+    init_s3()
+    # Note: Face analyzer initialization is optional for basic functionality
+    # init_face_analyzer()  # Commented out for now to simplify startup
+    
+    logger.info("Vision Service started successfully", 
+               s3_bucket=S3_BUCKET_NAME,
+               face_model=FACE_MODEL_NAME)
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Vision Service")
+
+# Create app with lifespan
+app = FastAPI(title="Vision Service", lifespan=lifespan)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -136,15 +184,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def init_redis():
-    """Initialize Redis connection"""
-    global redis_client
+def init_s3():
+    """Initialize S3 client"""
+    global s3_client
     try:
-        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        await redis_client.ping()
-        logger.info("Redis connection established", redis_url=REDIS_URL)
+        s3_client = S3Client()
+        logger.info("S3 client initialized", 
+                   bucket=S3_BUCKET_NAME, 
+                   endpoint=S3_ENDPOINT_URL)
     except Exception as e:
-        logger.error("Failed to connect to Redis", error=str(e))
+        logger.error("Failed to initialize S3 client", error=str(e))
         raise
 
 def init_face_analyzer():
@@ -162,24 +211,31 @@ def init_face_analyzer():
         raise
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def publish_event(event_type: str, data: Dict[str, Any], correlation_id: str):
-    """Publish event to Redis with retry logic"""
+async def notify_orchestrator(stream_id: str, chunk_id: str, vision_result: Dict[str, Any]):
+    """Notify orchestrator about vision analysis completion via webhook"""
     try:
-        event = {
-            "eventId": str(uuid.uuid4()),
-            "eventType": event_type,
-            "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.0",
-            "source": "vision_svc",
-            "correlationId": correlation_id,
-            "data": data
+        webhook_url = f"{ORCHESTRATOR_URL}{VISION_WEBHOOK_ENDPOINT}"
+        payload = {
+            "streamId": stream_id,
+            "chunkId": chunk_id,
+            "result": vision_result
         }
         
-        await redis_client.publish("clipforge.events", json.dumps(event))
-        logger.info("Event published", event_type=event_type, correlation_id=correlation_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(webhook_url, json=payload) as response:
+                if response.status == 200:
+                    logger.info("Orchestrator webhook called successfully", 
+                               chunk_id=chunk_id, webhook_url=webhook_url)
+                else:
+                    error_text = await response.text()
+                    logger.error("Orchestrator webhook failed", 
+                                chunk_id=chunk_id, 
+                                status=response.status,
+                                error=error_text)
+                    
     except Exception as e:
-        logger.error("Failed to publish event", event_type=event_type, error=str(e))
-        raise
+        logger.error("Failed to notify orchestrator", chunk_id=chunk_id, error=str(e))
+        # Don't re-raise - webhook failures shouldn't fail the job
 
 def detect_scenes(video_path: str) -> List[SceneInfo]:
     """Detect scenes in video using PySceneDetect"""
@@ -441,100 +497,175 @@ async def save_analysis(chunk_id: str, analysis_data: Dict[str, Any]):
         logger.error("Failed to save analysis", chunk_id=chunk_id, error=str(e))
         raise
 
-async def process_vision_job(request: ChunkAnalysisRequest):
-    """Background job to process chunk vision analysis"""
-    correlation_id = request.job_id or str(uuid.uuid4())
+async def analyze_chunk_from_s3(s3_url: str, chunk_id: str, analysis_type: str = "full") -> Dict[str, Any]:
+    """Analyze video chunk from S3 URL using computer vision"""
+    start_time = datetime.utcnow()
+    local_file_path = None
+    
+    try:
+        # Download file from S3 to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
+            local_file_path = temp_file.name
+        
+        # Extract S3 key from URL
+        s3_key = s3_url.split(f"{S3_BUCKET_NAME}/")[-1]
+        
+        # Download file from S3
+        success = s3_client.download_file(s3_key, local_file_path)
+        if not success:
+            raise Exception(f"Failed to download file from S3: {s3_url}")
+        
+        logger.info("Downloaded chunk from S3", chunk_id=chunk_id, s3_key=s3_key)
+        
+        # Perform basic video analysis
+        analysis_result = {
+            "sceneChanges": [],
+            "faces": [],
+            "motionIntensity": [],
+            "colorHistogram": [],
+            "processing_time": 0,
+            "metadata": {}
+        }
+        
+        # Get video metadata using OpenCV
+        cap = cv2.VideoCapture(local_file_path)
+        if cap.isOpened():
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            duration = frame_count / fps if fps > 0 else 0
+            
+            analysis_result["metadata"] = {
+                "fps": fps,
+                "frame_count": frame_count,
+                "width": width,
+                "height": height,
+                "duration": duration
+            }
+            
+            # Simple scene analysis - sample frames every 2 seconds
+            scene_changes = []
+            frame_interval = int(fps * 2) if fps > 0 else 30
+            
+            for frame_num in range(0, frame_count, frame_interval):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
+                if ret:
+                    timestamp = frame_num / fps if fps > 0 else 0
+                    scene_changes.append({
+                        "timestamp": timestamp,
+                        "frame_num": frame_num,
+                        "brightness": np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+                    })
+            
+            analysis_result["sceneChanges"] = scene_changes
+            cap.release()
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        analysis_result["processing_time"] = processing_time
+        
+        # Cleanup temporary file
+        if local_file_path and os.path.exists(local_file_path):
+            try:
+                os.remove(local_file_path)
+            except:
+                pass
+        
+        return analysis_result
+        
+    except Exception as e:
+        logger.error("Vision analysis failed", chunk_id=chunk_id, s3_url=s3_url, error=str(e))
+        
+        # Cleanup on error
+        if local_file_path and os.path.exists(local_file_path):
+            try:
+                os.remove(local_file_path)
+            except:
+                pass
+        
+        raise
+
+async def process_vision_job(request: ChunkAnalysisRequest, stream_id: str):
+    """Background job to process chunk vision analysis with S3 integration"""
+    chunk_id = request.chunkId
+    
+    # Update job status
+    processing_jobs[chunk_id] = {
+        "status": "processing",
+        "started_at": datetime.utcnow().isoformat()
+    }
     
     async with processing_semaphore:
         try:
             logger.info("Starting vision analysis job", 
-                       chunk_id=request.chunk_id,
-                       analysis_types=request.analysis_types,
-                       correlation_id=correlation_id)
+                       chunk_id=chunk_id,
+                       s3_url=request.videoPath)
             
-            # Publish job started event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
-                "status": "processing",
-                "service": "vision_svc",
-                "chunkId": request.chunk_id
-            }, correlation_id)
-            
-            # Perform analysis
-            analysis_result = await analyze_chunk(
-                request.chunk_path, 
-                request.analysis_types
+            # Download video from S3 and perform analysis
+            analysis_result = await analyze_chunk_from_s3(
+                request.videoPath, 
+                chunk_id,
+                request.analysisType
             )
             
-            # Add metadata
-            analysis_result.update({
-                "chunk_id": request.chunk_id,
-                "stream_id": request.stream_id
-            })
+            # Save analysis locally
+            await save_analysis(chunk_id, analysis_result)
             
-            # Save analysis
-            await save_analysis(request.chunk_id, analysis_result)
-            
-            # Publish analysis completed event
-            await publish_event("chunk.vision_analyzed", {
-                "chunkId": request.chunk_id,
-                "streamId": request.stream_id,
-                "analysis": analysis_result
-            }, correlation_id)
-            
-            # Publish job completed event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
+            # Update job status
+            processing_jobs[chunk_id] = {
                 "status": "completed",
-                "service": "vision_svc",
-                "chunkId": request.chunk_id
-            }, correlation_id)
+                "analysis": analysis_result,
+                "completed_at": datetime.utcnow().isoformat()
+            }
+            
+            # Notify orchestrator via webhook
+            await notify_orchestrator(stream_id, chunk_id, analysis_result)
             
             logger.info("Vision analysis job completed", 
-                       chunk_id=request.chunk_id,
-                       correlation_id=correlation_id,
-                       processing_time=analysis_result["processing_time"])
+                       chunk_id=chunk_id,
+                       processing_time=analysis_result.get("processing_time", 0))
             
         except Exception as e:
+            error_msg = str(e)
             logger.error("Vision analysis job failed", 
-                        chunk_id=request.chunk_id,
-                        correlation_id=correlation_id,
-                        error=str(e))
+                        chunk_id=chunk_id,
+                        error=error_msg)
             
-            # Publish job failed event
-            await publish_event("job.status_changed", {
-                "jobId": correlation_id,
+            # Update job status with error
+            processing_jobs[chunk_id] = {
                 "status": "failed",
-                "service": "vision_svc",
-                "chunkId": request.chunk_id,
-                "error": str(e)
-            }, correlation_id)
+                "error": error_msg,
+                "failed_at": datetime.utcnow().isoformat()
+            }
 
 # API Endpoints
-@app.post("/analyze", response_model=Dict[str, str])
+@app.post("/analyze")
 async def analyze_chunk_endpoint(
     request: ChunkAnalysisRequest,
     background_tasks: BackgroundTasks
 ):
-    """Start vision analysis job for a chunk"""
+    """Start vision analysis job for a chunk (matches orchestrator call format)"""
     try:
-        correlation_id = request.job_id or str(uuid.uuid4())
-        
-        # Validate chunk file exists
-        if not os.path.exists(request.chunk_path):
-            raise HTTPException(status_code=404, detail=f"Chunk file not found: {request.chunk_path}")
+        chunk_id = request.chunkId
+        stream_id = request.streamId
         
         # Add background task
-        background_tasks.add_task(process_vision_job, request)
+        background_tasks.add_task(process_vision_job, request, stream_id)
+        
+        # Initialize job tracking
+        processing_jobs[chunk_id] = {
+            "status": "accepted",
+            "accepted_at": datetime.utcnow().isoformat()
+        }
         
         logger.info("Vision analysis job queued", 
-                   chunk_id=request.chunk_id,
-                   correlation_id=correlation_id)
+                   chunk_id=chunk_id,
+                   video_path=request.videoPath)
         
         return {
             "status": "accepted",
-            "chunk_id": request.chunk_id,
-            "correlation_id": correlation_id,
+            "chunkId": chunk_id,
             "message": "Vision analysis job started"
         }
         
@@ -542,24 +673,48 @@ async def analyze_chunk_endpoint(
         logger.error("Failed to start vision analysis job", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/analysis/{chunk_id}")
-async def get_analysis(chunk_id: str):
-    """Get vision analysis results for a chunk"""
+@app.get("/analysis/{chunk_id}", response_model=VisionAnalysisStatus)
+async def get_analysis_status(chunk_id: str):
+    """Get vision analysis status for a chunk (matches orchestrator polling)"""
     try:
+        # Check in-memory job status first
+        if chunk_id in processing_jobs:
+            job_status = processing_jobs[chunk_id]
+            
+            if job_status["status"] == "completed":
+                return VisionAnalysisStatus(
+                    status="completed",
+                    analysis=job_status["analysis"]
+                )
+            elif job_status["status"] == "failed":
+                return VisionAnalysisStatus(
+                    status="failed",
+                    error=job_status.get("error", "Unknown error")
+                )
+            else:
+                return VisionAnalysisStatus(
+                    status="processing"
+                )
+        
+        # Check saved analysis file as fallback
         analysis_file = os.path.join(ANALYSIS_STORAGE_PATH, f"{chunk_id}_vision.json")
         
-        if not os.path.exists(analysis_file):
-            raise HTTPException(status_code=404, detail="Analysis not found")
+        if os.path.exists(analysis_file):
+            with open(analysis_file, 'r', encoding='utf-8') as f:
+                analysis_data = json.load(f)
+            
+            return VisionAnalysisStatus(
+                status="completed",
+                analysis=analysis_data
+            )
         
-        with open(analysis_file, 'r', encoding='utf-8') as f:
-            analysis_data = json.load(f)
-        
-        return analysis_data
+        # Job not found
+        raise HTTPException(status_code=404, detail="Vision analysis job not found")
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to retrieve analysis", chunk_id=chunk_id, error=str(e))
+        logger.error("Failed to retrieve analysis status", chunk_id=chunk_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/analysis/{chunk_id}")
@@ -634,31 +789,6 @@ async def get_service_stats():
     except Exception as e:
         logger.error("Failed to get stats", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
-
-# Startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    """Initialize service on startup"""
-    logger.info("Starting Vision Service", port=SERVICE_PORT)
-    
-    # Create storage directories
-    os.makedirs(ANALYSIS_STORAGE_PATH, exist_ok=True)
-    
-    # Initialize connections and models
-    await init_redis()
-    init_face_analyzer()
-    
-    logger.info("Vision Service started successfully")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("Shutting down Vision Service")
-    
-    if redis_client:
-        await redis_client.close()
-    
-    logger.info("Vision Service shutdown complete")
 
 if __name__ == "__main__":
     import uvicorn
