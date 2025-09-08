@@ -7,6 +7,7 @@ Multi-modal highlight scoring and clip generation service
 import asyncio
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -195,9 +196,17 @@ class ScoringService:
             # Extract features from chunk
             features = await self._extract_chunk_features(request)
             
-            # Store features in Redis
+            # Store features in Redis (convert numpy types to Python types)
             feature_key = f"chunk_features:{request.chunk_id}"
-            await self.redis_client.hset(feature_key, mapping=features)
+            # Convert numpy types to Python types for JSON serialization
+            serializable_features = {}
+            for k, v in features.items():
+                if hasattr(v, 'item'):  # numpy scalar
+                    serializable_features[k] = v.item()
+                else:
+                    serializable_features[k] = float(v)
+            
+            await self.redis_client.hset(feature_key, mapping=serializable_features)
             await self.redis_client.expire(feature_key, config['redis']['result_ttl'])
             
             # Publish chunk analyzed event
@@ -235,6 +244,10 @@ class ScoringService:
             "emotion_intensity": 0.0,
             "scene_changes": 0.0
         }
+        
+        # Extract audio energy from video file
+        if request.chunk_path and os.path.exists(request.chunk_path):
+            features.update(await self._extract_audio_features(request.chunk_path))
         
         # Process transcription data
         if request.transcription_data:
@@ -311,11 +324,106 @@ class ScoringService:
         
         return features
 
+    async def _extract_audio_features(self, video_path: str) -> Dict[str, float]:
+        """Extract audio energy and other audio features from video file"""
+        features = {}
+        
+        try:
+            # Use FFmpeg to extract audio data
+            import subprocess
+            import tempfile
+            import json
+            
+            # Create temporary file for audio data
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                temp_audio_path = temp_audio.name
+            
+            # Extract audio from video using FFmpeg
+            cmd = [
+                'ffmpeg', '-i', video_path, 
+                '-vn',  # No video
+                '-acodec', 'pcm_s16le',  # 16-bit PCM
+                '-ar', '44100',  # Sample rate
+                '-ac', '1',  # Mono
+                '-f', 'wav',
+                '-y',  # Overwrite output
+                temp_audio_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.warning("Failed to extract audio", error=result.stderr)
+                return {"audio_energy": 0.0, "audio_peak": 0.0, "audio_rms": 0.0}
+            
+            # Analyze audio using FFmpeg's audio analysis
+            analysis_cmd = [
+                'ffmpeg', '-i', temp_audio_path,
+                '-af', 'astats=metadata=1:reset=1',
+                '-f', 'null', '-'
+            ]
+            
+            analysis_result = subprocess.run(analysis_cmd, capture_output=True, text=True, timeout=30)
+            
+            # Parse audio statistics
+            audio_energy = 0.0
+            audio_peak = 0.0
+            audio_rms = 0.0
+            
+            if analysis_result.returncode == 0:
+                stderr = analysis_result.stderr
+                
+                # Extract RMS (Root Mean Square) - average energy
+                rms_match = re.search(r'lavfi\.astats\.Overall\.RMS level: ([-\d.inf]+)', stderr)
+                if rms_match:
+                    rms_str = rms_match.group(1)
+                    if rms_str == '-inf':
+                        audio_rms = -60.0  # Very quiet audio
+                        audio_energy = 0.1  # Low but not zero energy
+                    else:
+                        audio_rms = float(rms_str)
+                        # Convert dB to linear scale and normalize
+                        audio_energy = min(max(10 ** (audio_rms / 20) / 10, 0), 1)
+                
+                # Extract peak level
+                peak_match = re.search(r'lavfi\.astats\.Overall\.Peak level: ([-\d.inf]+)', stderr)
+                if peak_match:
+                    peak_str = peak_match.group(1)
+                    if peak_str == '-inf':
+                        audio_peak = -60.0  # Very quiet audio
+                        audio_peak = 0.1  # Low but not zero peak
+                    else:
+                        audio_peak = float(peak_str)
+                        # Convert dB to linear scale and normalize
+                        audio_peak = min(max(10 ** (audio_peak / 20) / 10, 0), 1)
+            
+            features = {
+                "audio_energy": audio_energy,
+                "audio_peak": audio_peak,
+                "audio_rms": audio_rms
+            }
+            
+            # Clean up temporary file
+            try:
+                os.unlink(temp_audio_path)
+            except:
+                pass
+                
+        except Exception as e:
+            logger.warning("Audio feature extraction failed", error=str(e))
+            features = {"audio_energy": 0.0, "audio_peak": 0.0, "audio_rms": 0.0}
+        
+        return features
+
     async def _process_highlight_scoring(self, request: HighlightScoringRequest, correlation_id: str):
         """Process highlight scoring for entire stream"""
         try:
+            logger.info("Starting highlight scoring process", stream_id=request.stream_id)
+            
             # Get all chunk features for stream
             chunk_features = await self._get_stream_chunk_features(request.stream_id)
+            
+            logger.info("Retrieved chunk features", chunk_count=len(chunk_features), features=chunk_features)
             
             if not chunk_features:
                 raise ValueError(f"No chunk features found for stream {request.stream_id}")
@@ -364,18 +472,35 @@ class ScoringService:
         chunk_features = {}
         
         # Get chunk IDs for stream (this would typically come from orchestrator)
-        # For now, scan for chunk feature keys
-        pattern = f"chunk_features:*"
+        # For now, scan for chunk feature keys that contain the stream_id
+        pattern = f"chunk_features:*{stream_id}*"
         keys = await self.redis_client.keys(pattern)
+        
+        logger.info("Getting chunk features", stream_id=stream_id, pattern=pattern, keys_found=len(keys))
         
         for key in keys:
             chunk_id = key.split(':')[1]
             features = await self.redis_client.hgetall(key)
             
-            # Convert string values back to float
-            chunk_features[chunk_id] = {
-                k: float(v) for k, v in features.items()
-            }
+            logger.info("Processing chunk", chunk_id=chunk_id, raw_features=features)
+            
+            # Convert string values back to float, handling numpy types
+            chunk_features[chunk_id] = {}
+            for k, v in features.items():
+                try:
+                    # Handle numpy string representations
+                    if isinstance(v, str) and v.startswith('np.'):
+                        # Extract the numeric value from numpy string representation
+                        import re
+                        match = re.search(r'(\d+\.?\d*)', v)
+                        if match:
+                            chunk_features[chunk_id][k] = float(match.group(1))
+                        else:
+                            chunk_features[chunk_id][k] = 0.0
+                    else:
+                        chunk_features[chunk_id][k] = float(v)
+                except (ValueError, TypeError):
+                    chunk_features[chunk_id][k] = 0.0
         
         return chunk_features
 
@@ -385,20 +510,37 @@ class ScoringService:
         weights = config['scoring']['weights']
         
         for chunk_id, features in chunk_features.items():
+            # Debug logging
+            logger.info("Processing chunk features", chunk_id=chunk_id, features=features)
+            
             # Base feature scores
-            audio_score = features.get('audio_energy', 0.0) * weights['audio_energy']
-            speech_score = features.get('speech_activity', 0.0) * weights['speech_activity']
-            visual_score = features.get('visual_activity', 0.0) * weights['visual_activity']
-            face_score = features.get('face_presence', 0.0) * weights['face_presence']
+            audio_score = features.get('audio_energy', 0.0) * weights['audioEnergy']
+            speech_score = features.get('speech_activity', 0.0) * weights['speechActivity']
+            visual_score = features.get('visual_activity', 0.0) * weights['visualActivity']
+            face_score = features.get('face_presence', 0.0) * weights['facePresence']
+            
+            # Enhanced audio features
+            audio_peak = features.get('audio_peak', 0.0)
+            audio_rms = features.get('audio_rms', 0.0)
+            
+            # Boost audio score for high-energy moments
+            if audio_peak > 0.7:  # High peak levels indicate excitement
+                audio_score *= 1.3
+            if audio_rms > 0.5:  # High RMS indicates sustained energy
+                audio_score *= 1.2
             
             # Bonus features
             emotion_bonus = features.get('emotion_intensity', 0.0) * weights.get('emotion_intensity', 0.1)
             excitement_bonus = features.get('excitement_score', 0.0) * weights.get('excitement_score', 0.1)
             scene_bonus = features.get('scene_changes', 0.0) * weights.get('scene_changes', 0.05)
             
+            # Audio dynamics bonus (sudden changes in energy)
+            audio_dynamics = abs(audio_peak - audio_rms) * 0.1
+            audio_dynamics_bonus = min(audio_dynamics, 0.2)
+            
             # Combined score
             base_score = audio_score + speech_score + visual_score + face_score
-            bonus_score = emotion_bonus + excitement_bonus + scene_bonus
+            bonus_score = emotion_bonus + excitement_bonus + scene_bonus + audio_dynamics_bonus
             
             final_score = min(base_score + bonus_score, 1.0)
             scores[chunk_id] = final_score
@@ -416,7 +558,7 @@ class ScoringService:
         score_values = [item[1] for item in sorted_items]
         
         # Apply moving average smoothing
-        window_size = config['scoring']['temporal_analysis']['smoothing_window']
+        window_size = config['post_processing']['smoothing']['window_size']
         smoothed_values = []
         
         for i in range(len(score_values)):
