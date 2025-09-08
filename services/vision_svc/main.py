@@ -71,7 +71,7 @@ MIN_SCENE_LENGTH = float(os.getenv("MIN_SCENE_LENGTH", "3.0"))
 
 # Orchestrator webhook configuration
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
-VISION_WEBHOOK_ENDPOINT = "/api/processing/webhooks/vision-complete"
+VISION_WEBHOOK_ENDPOINT = "/api/v1/processing/webhooks/vision-complete"
 
 # S3 configuration
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "clipforge-storage")

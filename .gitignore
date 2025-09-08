@@ -5,6 +5,7 @@ node_modules/
 npm-debug.log*
 pnpm-lock.yaml
 yarn-error.log
+uploads/
 
 # Next.js / web build
 .next/

@@ -255,7 +255,7 @@ def get_scoring_reasons(chunk: ChunkInput, score: float) -> List[str]:
 async def notify_orchestrator_webhook(stream_id: str, highlights: List[Dict[str, Any]]):
     """Notify orchestrator of completed scoring"""
     try:
-        webhook_url = f"{ORCHESTRATOR_URL}/api/processing/webhooks/scoring-complete"
+        webhook_url = f"{ORCHESTRATOR_URL}/api/v1/processing/webhooks/scoring-complete"
         
         async with aiohttp.ClientSession() as session:
             await session.post(webhook_url, json={

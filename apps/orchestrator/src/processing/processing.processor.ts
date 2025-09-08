@@ -81,7 +81,7 @@ export class ProcessingProcessor {
       this.logger.log(`ASR completed for chunk ${chunkId}`);
 
       // Notify orchestrator via webhook
-      await this.notifyWebhook('/processing/webhooks/asr-complete', {
+      await this.notifyWebhook('processing/webhooks/asr-complete', {
         streamId,
         chunkId,
         result: result.transcription,
@@ -149,7 +149,7 @@ export class ProcessingProcessor {
       this.logger.log(`Vision analysis completed for chunk ${chunkId}`);
 
       // Notify orchestrator via webhook
-      await this.notifyWebhook('/processing/webhooks/vision-complete', {
+      await this.notifyWebhook('processing/webhooks/vision-complete', {
         streamId,
         chunkId,
         result: result.analysis,
@@ -224,7 +224,7 @@ export class ProcessingProcessor {
       this.logger.log(`Scoring completed for stream ${streamId}`);
 
       // Notify orchestrator via webhook
-      await this.notifyWebhook('/processing/webhooks/scoring-complete', {
+      await this.notifyWebhook('processing/webhooks/scoring-complete', {
         streamId,
         result: result.highlights,
       });
@@ -304,7 +304,7 @@ export class ProcessingProcessor {
       this.logger.log(`Rendering completed for clip ${clipId}`);
 
       // Notify orchestrator via webhook
-      await this.notifyWebhook('/processing/webhooks/rendering-complete', {
+      await this.notifyWebhook('processing/webhooks/rendering-complete', {
         clipId,
         result: {
           renderedS3Url: result.outputPath,
@@ -328,7 +328,7 @@ export class ProcessingProcessor {
     try {
       const orchestratorUrl = this.configService.get<string>('ORCHESTRATOR_URL', 'http://localhost:3001');
       await firstValueFrom(
-        this.httpService.post(`${orchestratorUrl}/api${endpoint}`, data)
+        this.httpService.post(`${orchestratorUrl}/api/v1/${endpoint}`, data)
       );
     } catch (error: any) {
       this.logger.error(`Failed to notify webhook ${endpoint}:`, error.message);

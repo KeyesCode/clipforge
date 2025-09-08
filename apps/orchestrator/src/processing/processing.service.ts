@@ -261,23 +261,24 @@ export class ProcessingService {
   async onScoringComplete(streamId: string, scoringResult: any): Promise<void> {
     this.logger.log(`Scoring completed for stream ${streamId}`);
 
-    // Update chunk scores
-    for (const chunkScore of scoringResult.chunkScores || []) {
+    // Update chunk scores - scoringResult contains highlights array
+    const highlights = scoringResult.highlights || [];
+    for (const highlight of highlights) {
       const chunk = await this.chunkRepository.findOne({ 
-        where: { id: chunkScore.chunkId } 
+        where: { id: highlight.chunkId } 
       });
       
       if (chunk) {
-        chunk.score = chunkScore.score;
-        chunk.scoreBreakdown = chunkScore.breakdown;
+        chunk.highlightScore = highlight.score;
+        chunk.scoreBreakdown = highlight.reasons;
         chunk.status = ChunkStatus.SCORED;
         await this.chunkRepository.save(chunk);
       }
     }
 
     // Get high-scoring chunks for clip creation
-    const highScoringChunks = scoringResult.chunkScores
-      .filter((cs: any) => cs.score >= 0.7) // Configurable threshold
+    const highScoringChunks = highlights
+      .filter((h: any) => h.score >= 0.7) // Configurable threshold
       .sort((a: any, b: any) => b.score - a.score) // Sort by score descending
       .slice(0, 10); // Top 10 clips maximum
 

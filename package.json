@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "ClipForge - AI-powered video content creation platform",
   "scripts": {
-    "install:python-services": "cd services/ingest_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../asr_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../vision_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../scoring_svc && source venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt && cd ../render_svc && source venv/bin/activate && pip install -r requirements.txt"
+    "install:python-services": "cd services/ingest_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../asr_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../vision_svc && source venv/bin/activate && pip install -r requirements.txt && cd ../scoring_svc && source venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt && cd ../render_svc && source venv/bin/activate && pip install -r requirements.txt",
+    "copy:local:env": "cd services/ingest_svc && cp .env.local .env && cd ../asr_svc && cp .env.local .env && cd ../vision_svc && cp .env.local .env && cd ../scoring_svc && cp .env.local .env && cd ../render_svc && cp .env.local .env"
   },
   "devDependencies": {
     "@types/node": "^24.3.1"

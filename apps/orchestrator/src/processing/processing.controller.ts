@@ -62,14 +62,15 @@ export class ProcessingController {
         data: status
       };
     } catch (error) {
-      this.logger.error(`Failed to get processing status for stream ${streamId}:`, error.message);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to get processing status for stream ${streamId}:`, errorMessage);
       
-      if (error.message.includes('not found')) {
-        throw new HttpException(error.message, HttpStatus.NOT_FOUND);
+      if (errorMessage.includes('not found')) {
+        throw new HttpException(errorMessage, HttpStatus.NOT_FOUND);
       }
       
       throw new HttpException(
-        `Failed to get processing status: ${error.message}`, 
+        `Failed to get processing status: ${errorMessage}`, 
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
@@ -86,9 +87,10 @@ export class ProcessingController {
       await this.processingService.onASRComplete(data.streamId, data.chunkId, data.result);
       return { success: true, message: 'ASR completion processed' };
     } catch (error) {
-      this.logger.error(`Failed to handle ASR completion:`, error.message);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to handle ASR completion:`, errorMessage);
       throw new HttpException(
-        `Failed to process ASR completion: ${error.message}`, 
+        `Failed to process ASR completion: ${errorMessage}`,
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
@@ -105,9 +107,10 @@ export class ProcessingController {
       await this.processingService.onVisionComplete(data.streamId, data.chunkId, data.result);
       return { success: true, message: 'Vision completion processed' };
     } catch (error) {
-      this.logger.error(`Failed to handle Vision completion:`, error.message);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to handle Vision completion:`, errorMessage);
       throw new HttpException(
-        `Failed to process Vision completion: ${error.message}`, 
+        `Failed to process Vision completion: ${errorMessage}`,
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
@@ -124,9 +127,10 @@ export class ProcessingController {
       await this.processingService.onScoringComplete(data.streamId, data.result);
       return { success: true, message: 'Scoring completion processed' };
     } catch (error) {
-      this.logger.error(`Failed to handle Scoring completion:`, error.message);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to handle Scoring completion:`, errorMessage);
       throw new HttpException(
-        `Failed to process Scoring completion: ${error.message}`, 
+        `Failed to process Scoring completion: ${errorMessage}`,
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
@@ -143,9 +147,10 @@ export class ProcessingController {
       await this.processingService.onRenderingComplete(data.clipId, data.result);
       return { success: true, message: 'Rendering completion processed' };
     } catch (error) {
-      this.logger.error(`Failed to handle Rendering completion:`, error.message);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to handle Rendering completion:`, errorMessage);
       throw new HttpException(
-        `Failed to process Rendering completion: ${error.message}`, 
+        `Failed to process Rendering completion: ${errorMessage}`,
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }

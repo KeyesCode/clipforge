@@ -193,6 +193,37 @@ TWITTER_API_KEY=your_twitter_api_key
 TWITTER_API_SECRET=your_twitter_api_secret
 ```
 
+### 📁 Environment Files Structure
+
+- **`.env`** - Default (Docker configuration)
+- **`.env.docker`** - Explicit Docker configuration  
+- **`.env.local`** - Local development configuration
+
+#### 🚀 Usage
+
+**For local development:**
+```bash
+cp .env.local .env
+# or
+ln -sf .env.local .env
+```
+
+**For Docker deployment:**
+```bash
+cp .env.docker .env  
+# or  
+ln -sf .env.docker .env
+```
+
+#### 🔧 Key Differences
+
+| Configuration | Docker                   | Local                 |
+|---------------|-------------------------|-----------------------|
+| Database Host | postgres                 | localhost             |
+| Redis Host    | redis                    | localhost             |
+| Services URLs | http://service_name:port | http://localhost:port |
+| Upload Path   | /app/uploads             | ./uploads             |
+
 ## 🎬 Usage Workflow
 
 ### 1. Add Streamer

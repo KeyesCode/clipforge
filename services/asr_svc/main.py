@@ -64,7 +64,7 @@ MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_ASR_JOBS", "2"))
 
 # Orchestrator webhook configuration
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
-ASR_WEBHOOK_ENDPOINT = "/api/processing/webhooks/asr-complete"
+ASR_WEBHOOK_ENDPOINT = "/api/v1/processing/webhooks/asr-complete"
 
 # S3 configuration
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "clipforge-storage")

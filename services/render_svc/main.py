@@ -359,7 +359,7 @@ def format_srt_time(seconds: float) -> str:
 async def notify_orchestrator_webhook(clip_id: str, result: Dict[str, Any]):
     """Notify orchestrator of completed rendering"""
     try:
-        webhook_url = f"{ORCHESTRATOR_URL}/api/processing/webhooks/rendering-complete"
+        webhook_url = f"{ORCHESTRATOR_URL}/api/v1/processing/webhooks/rendering-complete"
         
         async with aiohttp.ClientSession() as session:
             await session.post(webhook_url, json={
