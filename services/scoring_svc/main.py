@@ -227,6 +227,10 @@ def score_transcription(text: str) -> float:
     # Base score for having any transcription
     score += 0.2
     
+    # High-priority clip request terms (explicit requests for clipping)
+    clip_request_terms = ["clip it", "clip that", "make a clip", "that's a clip", "clipworthy", "clip worthy"]
+    score += sum(0.3 for term in clip_request_terms if term in text_lower)
+    
     # Action words boost (expanded list)
     action_words = ["amazing", "incredible", "wow", "unbelievable", "insane", "perfect", "epic", 
                    "awesome", "fantastic", "great", "excellent", "outstanding", "brilliant"]
