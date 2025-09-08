@@ -43,7 +43,7 @@ logger = structlog.get_logger()
 # Configuration
 SCORING_SERVICE_PORT = int(os.getenv("SCORING_SERVICE_PORT", "8004"))
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
-HIGHLIGHT_THRESHOLD = float(os.getenv("HIGHLIGHT_THRESHOLD", "0.7"))
+HIGHLIGHT_THRESHOLD = float(os.getenv("HIGHLIGHT_THRESHOLD", "0.3"))
 MIN_HIGHLIGHT_DURATION = float(os.getenv("MIN_HIGHLIGHT_DURATION", "5.0"))
 MAX_HIGHLIGHT_DURATION = float(os.getenv("MAX_HIGHLIGHT_DURATION", "60.0"))
 
@@ -119,12 +119,17 @@ async def process_scoring_job(request: ScoringRequest):
     stream_id = request.streamId
     
     try:
+        print(f"🎯 SCORING: Starting job for stream {stream_id}")
+        print(f"🎯 SCORING: Received {len(request.chunks)} chunks")
+        
         # Update status
         processing_jobs[stream_id]["status"] = "processing"
         processing_jobs[stream_id]["started_at"] = datetime.utcnow().isoformat()
         
         # Analyze chunks and generate highlights
         highlights = await analyze_and_score_chunks(request.chunks)
+        
+        print(f"🎯 SCORING: Generated {len(highlights)} highlights for stream {stream_id}")
         
         # Update with results
         processing_jobs[stream_id].update({
@@ -137,6 +142,7 @@ async def process_scoring_job(request: ScoringRequest):
         await notify_orchestrator_webhook(stream_id, highlights)
         
     except Exception as e:
+        print(f"🎯 SCORING ERROR: {e}")
         logger.error("Scoring job failed", stream_id=stream_id, error=str(e))
         processing_jobs[stream_id].update({
             "status": "failed", 
@@ -148,10 +154,50 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
     """Core scoring logic"""
     highlights = []
     
-    for chunk in chunks:
+    print(f"🎯 ANALYZE: Processing {len(chunks)} chunks with threshold {HIGHLIGHT_THRESHOLD}")
+    
+    for i, chunk in enumerate(chunks):
+        print(f"🎯 CHUNK {i+1}: ID={chunk.chunkId}")
+        print(f"🎯 CHUNK {i+1}: Has transcription: {bool(chunk.chunkData.transcription)}")
+        print(f"🎯 CHUNK {i+1}: Has vision: {bool(chunk.chunkData.vision)}")
+        print(f"🎯 CHUNK {i+1}: Has audio: {bool(chunk.chunkData.audioFeatures)}")
+        
+        if chunk.chunkData.transcription:
+            # Try multiple ways to extract text from transcription
+            transcription = chunk.chunkData.transcription
+            text = ""
+            
+            if isinstance(transcription, str):
+                text = transcription
+            elif isinstance(transcription, dict):
+                # Try getting text field first  
+                text = transcription.get("text", "")
+                
+                # If no text field, extract from segments (Whisper format)
+                if not text and transcription.get("segments"):
+                    segments = transcription["segments"]
+                    if isinstance(segments, list):
+                        text_parts = []
+                        for seg in segments:
+                            if isinstance(seg, dict) and seg.get("text"):
+                                text_parts.append(seg["text"].strip())
+                        text = " ".join(text_parts)
+                        print(f"🎯 DEBUG: Extracted {len(text_parts)} segments from Whisper format")
+                
+                # Fallback: try getting from 'transcript' field
+                if not text and transcription.get("transcript"):
+                    text = transcription["transcript"]
+            
+            print(f"🎯 CHUNK {i+1}: Transcription type: {type(transcription)}")
+            print(f"🎯 CHUNK {i+1}: Transcription keys: {list(transcription.keys()) if isinstance(transcription, dict) else 'N/A'}")
+            print(f"🎯 CHUNK {i+1}: Extracted text length: {len(text)}")
+            print(f"🎯 CHUNK {i+1}: Text preview: '{text[:200]}...'")
+        
         score = calculate_chunk_score(chunk)
+        print(f"🎯 CHUNK {i+1}: Final score: {score} (threshold: {HIGHLIGHT_THRESHOLD})")
         
         if score >= HIGHLIGHT_THRESHOLD:
+            print(f"🎯 CHUNK {i+1}: ✅ HIGHLIGHT! Adding to results")
             highlights.append({
                 "chunkId": chunk.chunkId,
                 "score": score,
@@ -163,6 +209,10 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
                     "face_detected": chunk.chunkData.vision.get("faces_detected", False) if chunk.chunkData.vision else False
                 }
             })
+        else:
+            print(f"🎯 CHUNK {i+1}: ❌ Below threshold, skipping")
+    
+    print(f"🎯 ANALYZE: Found {len(highlights)} highlights out of {len(chunks)} chunks")
     
     # Sort by score descending
     highlights.sort(key=lambda x: x["score"], reverse=True)
@@ -172,18 +222,61 @@ def calculate_chunk_score(chunk: ChunkInput) -> float:
     """Calculate engagement score for chunk"""
     score = 0.0
     
+    # Debug logging
+    logger.info("Scoring chunk", 
+                chunk_id=chunk.chunkId, 
+                has_transcription=bool(chunk.chunkData.transcription),
+                has_vision=bool(chunk.chunkData.vision), 
+                has_audio=bool(chunk.chunkData.audioFeatures),
+                duration=chunk.chunkData.duration)
+    
     # Transcription scoring
     if chunk.chunkData.transcription:
-        text = chunk.chunkData.transcription.get("text", "")
-        score += score_transcription(text)
+        # Improved text extraction
+        transcription = chunk.chunkData.transcription
+        text = ""
+        
+        if isinstance(transcription, str):
+            text = transcription
+        elif isinstance(transcription, dict):
+            # Try getting text field first
+            text = transcription.get("text", "")
+            
+            # If no text field, extract from segments (Whisper format)
+            if not text and transcription.get("segments"):
+                segments = transcription["segments"]
+                if isinstance(segments, list):
+                    text_parts = []
+                    for seg in segments:
+                        if isinstance(seg, dict) and seg.get("text"):
+                            text_parts.append(seg["text"].strip())
+                    text = " ".join(text_parts)
+                    print(f"🎯 SCORING: Extracted {len(text_parts)} segments from Whisper format")
+            
+            # Fallback: try getting from 'transcript' field
+            if not text and transcription.get("transcript"):
+                text = transcription["transcript"]
+        
+        transcription_score = score_transcription(text)
+        score += transcription_score
+        logger.info("Transcription scoring", chunk_id=chunk.chunkId, text_length=len(text), transcription_score=transcription_score)
     
     # Vision scoring  
     if chunk.chunkData.vision:
-        score += score_vision_data(chunk.chunkData.vision)
+        vision_score = score_vision_data(chunk.chunkData.vision)
+        score += vision_score
+        logger.info("Vision scoring", chunk_id=chunk.chunkId, vision_score=vision_score)
     
     # Audio features scoring
     if chunk.chunkData.audioFeatures:
-        score += score_audio_features(chunk.chunkData.audioFeatures)
+        audio_score = score_audio_features(chunk.chunkData.audioFeatures)
+        score += audio_score
+        logger.info("Audio scoring", chunk_id=chunk.chunkId, audio_score=audio_score)
+    
+    # If no data sources, give a minimal base score
+    if not chunk.chunkData.transcription and not chunk.chunkData.vision and not chunk.chunkData.audioFeatures:
+        score = 0.2  # Minimal score for chunks without analysis data
+        logger.info("No analysis data, using base score", chunk_id=chunk.chunkId)
     
     # Duration penalty for very short/long chunks
     duration = chunk.chunkData.duration
@@ -192,7 +285,10 @@ def calculate_chunk_score(chunk: ChunkInput) -> float:
     elif duration > 30:
         score *= 0.8  # Slight penalty for long clips
     
-    return min(score, 1.0)  # Cap at 1.0
+    final_score = min(score, 1.0)  # Cap at 1.0
+    logger.info("Final chunk score", chunk_id=chunk.chunkId, score=final_score, threshold=HIGHLIGHT_THRESHOLD)
+    
+    return final_score
 
 def score_transcription(text: str) -> float:
     """Score transcription content"""
@@ -202,38 +298,81 @@ def score_transcription(text: str) -> float:
     score = 0.0
     text_lower = text.lower()
     
-    # Action words boost
-    action_words = ["amazing", "incredible", "wow", "unbelievable", "insane", "perfect", "epic"]
+    # Base score for having any transcription
+    score += 0.2
+    
+    # High-priority clip request terms (explicit requests for clipping)
+    clip_request_terms = ["clip it", "clip that", "make a clip", "that's a clip", "clipworthy", "clip worthy"]
+    score += sum(0.3 for term in clip_request_terms if term in text_lower)
+    
+    # Action words boost (expanded list)
+    action_words = ["amazing", "incredible", "wow", "unbelievable", "insane", "perfect", "epic", 
+                   "awesome", "fantastic", "great", "excellent", "outstanding", "brilliant"]
     score += sum(0.1 for word in action_words if word in text_lower)
     
-    # Emotion indicators
-    emotion_words = ["excited", "shocked", "surprised", "happy", "angry"]
+    # Emotion indicators (expanded)
+    emotion_words = ["excited", "shocked", "surprised", "happy", "angry", "love", "hate", 
+                    "crazy", "wild", "intense", "fun", "funny", "hilarious"]
     score += sum(0.05 for word in emotion_words if word in text_lower)
     
+    # Gaming/streaming terms
+    gaming_words = ["clutch", "play", "win", "lose", "kill", "death", "score", "points", "level",
+                   "good fight", "gg", "nice", "skilled", "combo", "finish", "victory", "defeat"]
+    score += sum(0.03 for word in gaming_words if word in text_lower)
+    
     # Length scoring (optimal around 50-200 chars)
-    length_score = min(len(text) / 200, 1.0) * 0.2
+    length_score = min(len(text) / 100, 1.0) * 0.3
     score += length_score
     
-    return min(score, 0.6)  # Cap transcription contribution
+    return min(score, 0.8)  # Increased cap for transcription contribution
 
 def score_vision_data(vision_data: Dict[str, Any]) -> float:
     """Score vision analysis data"""
     score = 0.0
     
+    # Base score for having vision data
+    score += 0.1
+    
     # Face detection boost
-    if vision_data.get("faces_detected", False):
-        score += 0.3
+    if vision_data.get("faces_detected", False) or vision_data.get("faces"):
+        score += 0.2
     
     # Scene changes indicate action
     scene_changes = vision_data.get("scene_changes", 0)
-    score += min(scene_changes * 0.1, 0.2)
+    if isinstance(scene_changes, list):
+        scene_changes = len(scene_changes)
+    score += min(scene_changes * 0.1, 0.3)
     
-    return min(score, 0.4)  # Cap vision contribution
+    # Motion intensity
+    motion = vision_data.get("motion_intensity", 0)
+    if motion > 0:
+        score += min(motion * 0.1, 0.2)
+    
+    return min(score, 0.6)  # Increased cap for vision contribution
 
 def score_audio_features(audio_features: Dict[str, Any]) -> float:
     """Score audio characteristics"""
-    # Placeholder - could analyze volume changes, silence, etc.
-    return 0.0
+    if not audio_features:
+        return 0.0
+    
+    score = 0.0
+    
+    # Base score for having audio features
+    score += 0.1
+    
+    # Energy/volume indicators
+    if audio_features.get("energy"):
+        energy = audio_features["energy"]
+        if isinstance(energy, list) and energy:
+            avg_energy = sum(energy) / len(energy)
+            score += min(avg_energy * 0.2, 0.3)
+    
+    # Loudness indicators
+    loudness = audio_features.get("loudness", 0)
+    if loudness > 0:
+        score += min(loudness * 0.05, 0.2)
+    
+    return min(score, 0.4)
 
 def get_scoring_reasons(chunk: ChunkInput, score: float) -> List[str]:
     """Get human-readable scoring reasons"""

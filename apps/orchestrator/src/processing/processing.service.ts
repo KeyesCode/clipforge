@@ -9,7 +9,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { Stream, StreamStatus } from '../streams/stream.entity';
 import { Chunk, ChunkStatus } from '../chunks/chunk.entity';
-import { Clip, ClipStatus } from '../clips/clip.entity';
+import { Clip, ClipStatus, ClipAspectRatio } from '../clips/clip.entity';
 
 export interface ProcessingJobData {
   streamId: string;
@@ -310,8 +310,31 @@ export class ProcessingService {
       clip.title = this.generateClipTitle(chunkScore);
       clip.startTime = chunkScore.suggestedStartTime || 0;
       clip.duration = chunkScore.suggestedDuration || 30;
+      clip.endTime = clip.startTime + clip.duration; // Calculate endTime from startTime + duration
       clip.score = chunkScore.score;
+      clip.highlightScore = chunkScore.score;
       clip.status = ClipStatus.PENDING_RENDER;
+      
+      // Required settings that were missing
+      clip.renderSettings = {
+        aspectRatio: ClipAspectRatio.VERTICAL, // Default to vertical for shorts
+        quality: 'high',
+        targetFileSize: undefined,
+        cropSettings: undefined,
+        filters: undefined,
+      };
+      
+      clip.captionSettings = {
+        enabled: true,
+        style: 'gaming',
+        fontSize: 24,
+        fontFamily: 'Arial Bold',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        position: 'bottom',
+        maxWordsPerLine: 8,
+        wordsPerSecond: 3,
+      };
       
       const savedClip = await this.clipRepository.save(clip);
 
