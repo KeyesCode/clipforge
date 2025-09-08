@@ -43,7 +43,7 @@ logger = structlog.get_logger()
 # Configuration
 SCORING_SERVICE_PORT = int(os.getenv("SCORING_SERVICE_PORT", "8004"))
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:3001")
-HIGHLIGHT_THRESHOLD = float(os.getenv("HIGHLIGHT_THRESHOLD", "0.7"))
+HIGHLIGHT_THRESHOLD = float(os.getenv("HIGHLIGHT_THRESHOLD", "0.3"))
 MIN_HIGHLIGHT_DURATION = float(os.getenv("MIN_HIGHLIGHT_DURATION", "5.0"))
 MAX_HIGHLIGHT_DURATION = float(os.getenv("MAX_HIGHLIGHT_DURATION", "60.0"))
 
@@ -202,38 +202,76 @@ def score_transcription(text: str) -> float:
     score = 0.0
     text_lower = text.lower()
     
-    # Action words boost
-    action_words = ["amazing", "incredible", "wow", "unbelievable", "insane", "perfect", "epic"]
+    # Base score for having any transcription
+    score += 0.2
+    
+    # Action words boost (expanded list)
+    action_words = ["amazing", "incredible", "wow", "unbelievable", "insane", "perfect", "epic", 
+                   "awesome", "fantastic", "great", "excellent", "outstanding", "brilliant"]
     score += sum(0.1 for word in action_words if word in text_lower)
     
-    # Emotion indicators
-    emotion_words = ["excited", "shocked", "surprised", "happy", "angry"]
+    # Emotion indicators (expanded)
+    emotion_words = ["excited", "shocked", "surprised", "happy", "angry", "love", "hate", 
+                    "crazy", "wild", "intense", "fun", "funny", "hilarious"]
     score += sum(0.05 for word in emotion_words if word in text_lower)
     
+    # Gaming/streaming terms
+    gaming_words = ["clutch", "play", "win", "lose", "kill", "death", "score", "points", "level"]
+    score += sum(0.03 for word in gaming_words if word in text_lower)
+    
     # Length scoring (optimal around 50-200 chars)
-    length_score = min(len(text) / 200, 1.0) * 0.2
+    length_score = min(len(text) / 100, 1.0) * 0.3
     score += length_score
     
-    return min(score, 0.6)  # Cap transcription contribution
+    return min(score, 0.8)  # Increased cap for transcription contribution
 
 def score_vision_data(vision_data: Dict[str, Any]) -> float:
     """Score vision analysis data"""
     score = 0.0
     
+    # Base score for having vision data
+    score += 0.1
+    
     # Face detection boost
-    if vision_data.get("faces_detected", False):
-        score += 0.3
+    if vision_data.get("faces_detected", False) or vision_data.get("faces"):
+        score += 0.2
     
     # Scene changes indicate action
     scene_changes = vision_data.get("scene_changes", 0)
-    score += min(scene_changes * 0.1, 0.2)
+    if isinstance(scene_changes, list):
+        scene_changes = len(scene_changes)
+    score += min(scene_changes * 0.1, 0.3)
     
-    return min(score, 0.4)  # Cap vision contribution
+    # Motion intensity
+    motion = vision_data.get("motion_intensity", 0)
+    if motion > 0:
+        score += min(motion * 0.1, 0.2)
+    
+    return min(score, 0.6)  # Increased cap for vision contribution
 
 def score_audio_features(audio_features: Dict[str, Any]) -> float:
     """Score audio characteristics"""
-    # Placeholder - could analyze volume changes, silence, etc.
-    return 0.0
+    if not audio_features:
+        return 0.0
+    
+    score = 0.0
+    
+    # Base score for having audio features
+    score += 0.1
+    
+    # Energy/volume indicators
+    if audio_features.get("energy"):
+        energy = audio_features["energy"]
+        if isinstance(energy, list) and energy:
+            avg_energy = sum(energy) / len(energy)
+            score += min(avg_energy * 0.2, 0.3)
+    
+    # Loudness indicators
+    loudness = audio_features.get("loudness", 0)
+    if loudness > 0:
+        score += min(loudness * 0.05, 0.2)
+    
+    return min(score, 0.4)
 
 def get_scoring_reasons(chunk: ChunkInput, score: float) -> List[str]:
     """Get human-readable scoring reasons"""

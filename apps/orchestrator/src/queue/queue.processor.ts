@@ -270,7 +270,7 @@ export class ProcessingQueueProcessor {
         });
 
         for (const chunk of topChunks) {
-          if ((chunk.highlightScore ?? 0) > 0.5) { // Only render high-scoring chunks
+          if ((chunk.highlightScore ?? 0) > 0.3) { // Only render scoring chunks above threshold
             await this.processRender(chunk);
           }
         }
