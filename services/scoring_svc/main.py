@@ -119,12 +119,17 @@ async def process_scoring_job(request: ScoringRequest):
     stream_id = request.streamId
     
     try:
+        print(f"🎯 SCORING: Starting job for stream {stream_id}")
+        print(f"🎯 SCORING: Received {len(request.chunks)} chunks")
+        
         # Update status
         processing_jobs[stream_id]["status"] = "processing"
         processing_jobs[stream_id]["started_at"] = datetime.utcnow().isoformat()
         
         # Analyze chunks and generate highlights
         highlights = await analyze_and_score_chunks(request.chunks)
+        
+        print(f"🎯 SCORING: Generated {len(highlights)} highlights for stream {stream_id}")
         
         # Update with results
         processing_jobs[stream_id].update({
@@ -137,6 +142,7 @@ async def process_scoring_job(request: ScoringRequest):
         await notify_orchestrator_webhook(stream_id, highlights)
         
     except Exception as e:
+        print(f"🎯 SCORING ERROR: {e}")
         logger.error("Scoring job failed", stream_id=stream_id, error=str(e))
         processing_jobs[stream_id].update({
             "status": "failed", 
@@ -148,10 +154,50 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
     """Core scoring logic"""
     highlights = []
     
-    for chunk in chunks:
+    print(f"🎯 ANALYZE: Processing {len(chunks)} chunks with threshold {HIGHLIGHT_THRESHOLD}")
+    
+    for i, chunk in enumerate(chunks):
+        print(f"🎯 CHUNK {i+1}: ID={chunk.chunkId}")
+        print(f"🎯 CHUNK {i+1}: Has transcription: {bool(chunk.chunkData.transcription)}")
+        print(f"🎯 CHUNK {i+1}: Has vision: {bool(chunk.chunkData.vision)}")
+        print(f"🎯 CHUNK {i+1}: Has audio: {bool(chunk.chunkData.audioFeatures)}")
+        
+        if chunk.chunkData.transcription:
+            # Try multiple ways to extract text from transcription
+            transcription = chunk.chunkData.transcription
+            text = ""
+            
+            if isinstance(transcription, str):
+                text = transcription
+            elif isinstance(transcription, dict):
+                # Try getting text field first  
+                text = transcription.get("text", "")
+                
+                # If no text field, extract from segments (Whisper format)
+                if not text and transcription.get("segments"):
+                    segments = transcription["segments"]
+                    if isinstance(segments, list):
+                        text_parts = []
+                        for seg in segments:
+                            if isinstance(seg, dict) and seg.get("text"):
+                                text_parts.append(seg["text"].strip())
+                        text = " ".join(text_parts)
+                        print(f"🎯 DEBUG: Extracted {len(text_parts)} segments from Whisper format")
+                
+                # Fallback: try getting from 'transcript' field
+                if not text and transcription.get("transcript"):
+                    text = transcription["transcript"]
+            
+            print(f"🎯 CHUNK {i+1}: Transcription type: {type(transcription)}")
+            print(f"🎯 CHUNK {i+1}: Transcription keys: {list(transcription.keys()) if isinstance(transcription, dict) else 'N/A'}")
+            print(f"🎯 CHUNK {i+1}: Extracted text length: {len(text)}")
+            print(f"🎯 CHUNK {i+1}: Text preview: '{text[:200]}...'")
+        
         score = calculate_chunk_score(chunk)
+        print(f"🎯 CHUNK {i+1}: Final score: {score} (threshold: {HIGHLIGHT_THRESHOLD})")
         
         if score >= HIGHLIGHT_THRESHOLD:
+            print(f"🎯 CHUNK {i+1}: ✅ HIGHLIGHT! Adding to results")
             highlights.append({
                 "chunkId": chunk.chunkId,
                 "score": score,
@@ -163,6 +209,10 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
                     "face_detected": chunk.chunkData.vision.get("faces_detected", False) if chunk.chunkData.vision else False
                 }
             })
+        else:
+            print(f"🎯 CHUNK {i+1}: ❌ Below threshold, skipping")
+    
+    print(f"🎯 ANALYZE: Found {len(highlights)} highlights out of {len(chunks)} chunks")
     
     # Sort by score descending
     highlights.sort(key=lambda x: x["score"], reverse=True)
@@ -182,7 +232,31 @@ def calculate_chunk_score(chunk: ChunkInput) -> float:
     
     # Transcription scoring
     if chunk.chunkData.transcription:
-        text = chunk.chunkData.transcription.get("text", "")
+        # Improved text extraction
+        transcription = chunk.chunkData.transcription
+        text = ""
+        
+        if isinstance(transcription, str):
+            text = transcription
+        elif isinstance(transcription, dict):
+            # Try getting text field first
+            text = transcription.get("text", "")
+            
+            # If no text field, extract from segments (Whisper format)
+            if not text and transcription.get("segments"):
+                segments = transcription["segments"]
+                if isinstance(segments, list):
+                    text_parts = []
+                    for seg in segments:
+                        if isinstance(seg, dict) and seg.get("text"):
+                            text_parts.append(seg["text"].strip())
+                    text = " ".join(text_parts)
+                    print(f"🎯 SCORING: Extracted {len(text_parts)} segments from Whisper format")
+            
+            # Fallback: try getting from 'transcript' field
+            if not text and transcription.get("transcript"):
+                text = transcription["transcript"]
+        
         transcription_score = score_transcription(text)
         score += transcription_score
         logger.info("Transcription scoring", chunk_id=chunk.chunkId, text_length=len(text), transcription_score=transcription_score)
