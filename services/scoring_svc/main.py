@@ -172,18 +172,37 @@ def calculate_chunk_score(chunk: ChunkInput) -> float:
     """Calculate engagement score for chunk"""
     score = 0.0
     
+    # Debug logging
+    logger.info("Scoring chunk", 
+                chunk_id=chunk.chunkId, 
+                has_transcription=bool(chunk.chunkData.transcription),
+                has_vision=bool(chunk.chunkData.vision), 
+                has_audio=bool(chunk.chunkData.audioFeatures),
+                duration=chunk.chunkData.duration)
+    
     # Transcription scoring
     if chunk.chunkData.transcription:
         text = chunk.chunkData.transcription.get("text", "")
-        score += score_transcription(text)
+        transcription_score = score_transcription(text)
+        score += transcription_score
+        logger.info("Transcription scoring", chunk_id=chunk.chunkId, text_length=len(text), transcription_score=transcription_score)
     
     # Vision scoring  
     if chunk.chunkData.vision:
-        score += score_vision_data(chunk.chunkData.vision)
+        vision_score = score_vision_data(chunk.chunkData.vision)
+        score += vision_score
+        logger.info("Vision scoring", chunk_id=chunk.chunkId, vision_score=vision_score)
     
     # Audio features scoring
     if chunk.chunkData.audioFeatures:
-        score += score_audio_features(chunk.chunkData.audioFeatures)
+        audio_score = score_audio_features(chunk.chunkData.audioFeatures)
+        score += audio_score
+        logger.info("Audio scoring", chunk_id=chunk.chunkId, audio_score=audio_score)
+    
+    # If no data sources, give a minimal base score
+    if not chunk.chunkData.transcription and not chunk.chunkData.vision and not chunk.chunkData.audioFeatures:
+        score = 0.2  # Minimal score for chunks without analysis data
+        logger.info("No analysis data, using base score", chunk_id=chunk.chunkId)
     
     # Duration penalty for very short/long chunks
     duration = chunk.chunkData.duration
@@ -192,7 +211,10 @@ def calculate_chunk_score(chunk: ChunkInput) -> float:
     elif duration > 30:
         score *= 0.8  # Slight penalty for long clips
     
-    return min(score, 1.0)  # Cap at 1.0
+    final_score = min(score, 1.0)  # Cap at 1.0
+    logger.info("Final chunk score", chunk_id=chunk.chunkId, score=final_score, threshold=HIGHLIGHT_THRESHOLD)
+    
+    return final_score
 
 def score_transcription(text: str) -> float:
     """Score transcription content"""
@@ -216,7 +238,8 @@ def score_transcription(text: str) -> float:
     score += sum(0.05 for word in emotion_words if word in text_lower)
     
     # Gaming/streaming terms
-    gaming_words = ["clutch", "play", "win", "lose", "kill", "death", "score", "points", "level"]
+    gaming_words = ["clutch", "play", "win", "lose", "kill", "death", "score", "points", "level",
+                   "good fight", "gg", "nice", "skilled", "combo", "finish", "victory", "defeat"]
     score += sum(0.03 for word in gaming_words if word in text_lower)
     
     # Length scoring (optimal around 50-200 chars)
