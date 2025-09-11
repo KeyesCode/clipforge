@@ -6,7 +6,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { ProcessingService } from './processing.service';
 import { ProcessingController } from './processing.controller';
-import { ProcessingProcessor } from './processing.processor';
+// import { ProcessingProcessor } from './processing.processor'; // DISABLED - using unified ProcessingQueueProcessor instead
 
 // Import entities
 import { Stream } from '../streams/stream.entity';
@@ -30,7 +30,7 @@ import { Clip } from '../clips/clip.entity';
     ConfigModule,
   ],
   controllers: [ProcessingController],
-  providers: [ProcessingService, ProcessingProcessor],
+  providers: [ProcessingService], // ProcessingProcessor DISABLED - using unified ProcessingQueueProcessor instead
   exports: [ProcessingService],
 })
 export class ProcessingModule {}

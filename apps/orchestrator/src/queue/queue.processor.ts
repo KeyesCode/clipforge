@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { Job, JobType, JobStatus } from '../jobs/job.entity';
 import { Stream, StreamStatus } from '../streams/stream.entity';
 import { Chunk, ChunkStatus } from '../chunks/chunk.entity';
+import { Clip, ClipStatus, ClipAspectRatio } from '../clips/clip.entity';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '@nestjs/config';
@@ -140,6 +141,8 @@ export class ProcessingQueueProcessor {
     private streamRepository: Repository<Stream>,
     @InjectRepository(Chunk)
     private chunkRepository: Repository<Chunk>,
+    @InjectRepository(Clip)
+    private clipRepository: Repository<Clip>,
     private httpService: HttpService,
     private configService: ConfigService,
   ) {}
@@ -248,7 +251,13 @@ export class ProcessingQueueProcessor {
       // Step 3: Scoring Service - Score all chunks together for ranking
       this.logger.log(`Starting Scoring analysis for stream ${streamId}`);
       try {
-        await this.processScoring(streamId, chunks);
+        // Get fresh chunk data with updated transcription and vision analysis
+        const freshChunks = await this.chunkRepository.find({
+          where: { streamId, status: ChunkStatus.ANALYZED },
+          order: { startTime: 'ASC' },
+        });
+        
+        await this.processScoring(streamId, freshChunks);
         
         // Update all successfully processed chunks to scored status
         await this.chunkRepository.update(
@@ -271,6 +280,13 @@ export class ProcessingQueueProcessor {
 
         for (const chunk of topChunks) {
           if ((chunk.highlightScore ?? 0) > 0.3) { // Only render scoring chunks above threshold
+            this.logger.log(`Processing render for chunk ${chunk.id} with score ${chunk.highlightScore}:`, {
+              chunkId: chunk.id,
+              videoPath: chunk.videoPath,
+              audioPath: chunk.audioPath,
+              startTime: chunk.startTime,
+              duration: chunk.duration
+            });
             await this.processRender(chunk);
           }
         }
@@ -347,13 +363,73 @@ export class ProcessingQueueProcessor {
         })
       );
 
+      // ASR service returns "accepted" response, we need to poll for completion
+      const asrResult = response.data;
+      this.logger.log(`ASR job accepted for chunk ${chunk.id}:`, JSON.stringify(asrResult, null, 2));
+      
+      if (asrResult && asrResult.status === 'accepted') {
+        // Poll for ASR completion and get results
+        const transcriptionResult = await this.pollASRCompletion(asrServiceUrl, chunk.id);
+        if (transcriptionResult && transcriptionResult.transcription) {
+          await this.chunkRepository.update(chunk.id, {
+            transcription: transcriptionResult.transcription,
+            updatedAt: new Date(),
+          });
+          this.logger.log(`Saved ASR transcription for chunk ${chunk.id}`);
+        } else {
+          this.logger.warn(`No transcription data received for chunk ${chunk.id}`);
+        }
+      } else {
+        this.logger.warn(`Unexpected ASR response format for chunk ${chunk.id}`);
+      }
+
       this.logger.log(`ASR completed for chunk ${chunk.id}`);
-      // The ASR service will webhook back to us with transcription results
       
     } catch (error) {
       this.logger.error(`ASR service failed for chunk ${chunk.id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Poll ASR service for completion and get transcription results
+   */
+  private async pollASRCompletion(asrServiceUrl: string, chunkId: string): Promise<any> {
+    const maxRetries = 30; // 5 minutes at 10 second intervals
+    const pollInterval = 10000; // 10 seconds
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        
+        const statusResponse = await firstValueFrom(
+          this.httpService.get(`${asrServiceUrl}/transcription/${chunkId}`)
+        );
+        
+        const statusData = statusResponse.data;
+        
+        if (statusData.status === 'completed' && statusData.transcription) {
+          this.logger.log(`ASR polling successful for chunk ${chunkId} after ${attempt + 1} attempts`);
+          return statusData;
+        } else if (statusData.status === 'failed') {
+          this.logger.error(`ASR processing failed for chunk ${chunkId}: ${statusData.error || 'Unknown error'}`);
+          return null;
+        }
+        
+        // Still processing, continue polling
+        this.logger.log(`ASR still processing for chunk ${chunkId}, attempt ${attempt + 1}/${maxRetries}`);
+        
+      } catch (error) {
+        this.logger.warn(`ASR polling error for chunk ${chunkId}, attempt ${attempt + 1}:`, error);
+        // Continue polling unless it's the last attempt
+        if (attempt === maxRetries - 1) {
+          throw error;
+        }
+      }
+    }
+    
+    this.logger.error(`ASR polling timeout for chunk ${chunkId} after ${maxRetries} attempts`);
+    return null;
   }
 
   /**
@@ -371,13 +447,73 @@ export class ProcessingQueueProcessor {
         })
       );
 
+      // Vision service returns "accepted" response, we need to poll for completion
+      const visionResult = response.data;
+      this.logger.log(`Vision job accepted for chunk ${chunk.id}:`, JSON.stringify(visionResult, null, 2));
+      
+      if (visionResult && visionResult.status === 'accepted') {
+        // Poll for Vision completion and get results
+        const analysisResult = await this.pollVisionCompletion(visionServiceUrl, chunk.id);
+        if (analysisResult && analysisResult.analysis) {
+          await this.chunkRepository.update(chunk.id, {
+            visionAnalysis: analysisResult.analysis,
+            updatedAt: new Date(),
+          });
+          this.logger.log(`Saved Vision analysis for chunk ${chunk.id}`);
+        } else {
+          this.logger.warn(`No analysis data received for chunk ${chunk.id}`);
+        }
+      } else {
+        this.logger.warn(`Unexpected Vision response format for chunk ${chunk.id}`);
+      }
+
       this.logger.log(`Vision analysis completed for chunk ${chunk.id}`);
-      // The Vision service will webhook back to us with analysis results
       
     } catch (error) {
       this.logger.error(`Vision service failed for chunk ${chunk.id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Poll Vision service for completion and get analysis results
+   */
+  private async pollVisionCompletion(visionServiceUrl: string, chunkId: string): Promise<any> {
+    const maxRetries = 30; // 5 minutes at 10 second intervals
+    const pollInterval = 10000; // 10 seconds
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        
+        const statusResponse = await firstValueFrom(
+          this.httpService.get(`${visionServiceUrl}/analysis/${chunkId}`)
+        );
+        
+        const statusData = statusResponse.data;
+        
+        if (statusData.status === 'completed' && statusData.analysis) {
+          this.logger.log(`Vision polling successful for chunk ${chunkId} after ${attempt + 1} attempts`);
+          return statusData;
+        } else if (statusData.status === 'failed') {
+          this.logger.error(`Vision processing failed for chunk ${chunkId}: ${statusData.error || 'Unknown error'}`);
+          return null;
+        }
+        
+        // Still processing, continue polling
+        this.logger.log(`Vision still processing for chunk ${chunkId}, attempt ${attempt + 1}/${maxRetries}`);
+        
+      } catch (error) {
+        this.logger.warn(`Vision polling error for chunk ${chunkId}, attempt ${attempt + 1}:`, error);
+        // Continue polling unless it's the last attempt
+        if (attempt === maxRetries - 1) {
+          throw error;
+        }
+      }
+    }
+    
+    this.logger.error(`Vision polling timeout for chunk ${chunkId} after ${maxRetries} attempts`);
+    return null;
   }
 
   /**
@@ -407,13 +543,77 @@ export class ProcessingQueueProcessor {
         })
       );
 
+      // Scoring service returns "accepted" response, we need to poll for completion
+      const scoringResult = response.data;
+      this.logger.log(`Scoring job accepted for stream ${streamId}:`, JSON.stringify(scoringResult, null, 2));
+      
+      if (scoringResult && scoringResult.status === 'accepted') {
+        // Poll for Scoring completion and get results
+        const scoresResult = await this.pollScoringCompletion(scoringServiceUrl, streamId);
+        if (scoresResult && scoresResult.highlights) {
+          // Update chunks with their highlight scores
+          for (const highlight of scoresResult.highlights) {
+            await this.chunkRepository.update(highlight.chunkId, {
+              highlightScore: highlight.score,
+              scoreBreakdown: highlight.breakdown,
+              updatedAt: new Date(),
+            });
+          }
+          this.logger.log(`Saved highlight scores for ${scoresResult.highlights.length} chunks`);
+        } else {
+          this.logger.warn(`No scores data received for stream ${streamId}`);
+        }
+      } else {
+        this.logger.warn(`Unexpected Scoring response format for stream ${streamId}`);
+      }
+
       this.logger.log(`Scoring completed for stream ${streamId} with ${chunks.length} chunks`);
-      // The Scoring service will webhook back to us with highlight scores
       
     } catch (error) {
       this.logger.error(`Scoring service failed for stream ${streamId}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Poll Scoring service for completion and get scores results
+   */
+  private async pollScoringCompletion(scoringServiceUrl: string, streamId: string): Promise<any> {
+    const maxRetries = 30; // 5 minutes at 10 second intervals
+    const pollInterval = 10000; // 10 seconds
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        
+        const statusResponse = await firstValueFrom(
+          this.httpService.get(`${scoringServiceUrl}/highlights/${streamId}`)
+        );
+        
+        const statusData = statusResponse.data;
+        
+        if (statusData.status === 'completed' && statusData.highlights !== undefined) {
+          this.logger.log(`Scoring polling successful for stream ${streamId} after ${attempt + 1} attempts`);
+          return statusData;
+        } else if (statusData.status === 'failed') {
+          this.logger.error(`Scoring processing failed for stream ${streamId}: ${statusData.error || 'Unknown error'}`);
+          return null;
+        }
+        
+        // Still processing, continue polling
+        this.logger.log(`Scoring still processing for stream ${streamId}, attempt ${attempt + 1}/${maxRetries}`);
+        
+      } catch (error) {
+        this.logger.warn(`Scoring polling error for stream ${streamId}, attempt ${attempt + 1}:`, error);
+        // Continue polling unless it's the last attempt
+        if (attempt === maxRetries - 1) {
+          throw error;
+        }
+      }
+    }
+    
+    this.logger.error(`Scoring polling timeout for stream ${streamId} after ${maxRetries} attempts`);
+    return null;
   }
 
   /**
@@ -423,30 +623,97 @@ export class ProcessingQueueProcessor {
     const renderServiceUrl = this.configService.get<string>('RENDER_SERVICE_URL', 'http://localhost:8005');
     
     try {
+      // First, create a clip entity for this chunk
+      const clip = this.clipRepository.create({
+        streamId: chunk.streamId,
+        chunkId: chunk.id,
+        sourceChunkId: chunk.id,
+        title: `Highlight from ${chunk.title || 'Stream'}`,
+        description: `Auto-generated highlight with score ${chunk.highlightScore}`,
+        status: ClipStatus.RENDERING,
+        startTime: chunk.startTime,
+        endTime: chunk.startTime + chunk.duration,
+        duration: chunk.duration,
+        score: chunk.highlightScore,
+        highlightScore: chunk.highlightScore,
+        scoreBreakdown: chunk.scoreBreakdown,
+        renderSettings: {
+          aspectRatio: ClipAspectRatio.VERTICAL,
+          quality: 'high' as const,
+        },
+        captionSettings: {
+          enabled: true,
+          style: 'gaming',
+          fontSize: 24,
+          fontFamily: 'Arial',
+          color: '#ffffff',
+          backgroundColor: '#000000',
+          position: 'bottom' as const,
+          maxWordsPerLine: 4,
+          wordsPerSecond: 2.5,
+        },
+        retryCount: 0,
+        approvalStatus: 'pending' as const,
+      });
+      
+      const savedClip = await this.clipRepository.save(clip);
+      this.logger.log(`Created clip entity ${savedClip.id} for chunk ${chunk.id}`);
+      
+      const renderRequest = {
+        clipId: savedClip.id,
+        sourceVideo: chunk.videoPath,
+        startTime: chunk.startTime,
+        duration: chunk.duration,
+        renderConfig: {
+          format: 'mp4',
+          resolution: '1080p',
+          platform: 'youtube_shorts',
+        },
+        captions: {
+          segments: chunk.transcription?.segments || [],
+          style: 'gaming',
+        },
+        effects: [],
+      };
+
+      this.logger.log(`Sending render request for chunk ${chunk.id} -> clip ${savedClip.id}:`, {
+        clipId: renderRequest.clipId,
+        sourceVideo: renderRequest.sourceVideo,
+        startTime: renderRequest.startTime,
+        duration: renderRequest.duration,
+      });
+
       const response = await firstValueFrom(
-        this.httpService.post(`${renderServiceUrl}/render`, {
-          clipId: chunk.id,
-          sourceVideo: chunk.videoPath,
-          startTime: chunk.startTime,
-          duration: chunk.duration,
-          renderConfig: {
-            format: 'mp4',
-            resolution: '1080p',
-            platform: 'youtube_shorts',
-          },
-          captions: {
-            segments: chunk.transcription?.segments || [],
-            style: 'gaming',
-          },
-          effects: [],
+        this.httpService.post(`${renderServiceUrl}/render`, renderRequest, {
+          timeout: 300000, // 5 minutes timeout for job acceptance (includes S3 download and processing)
         })
       );
 
-      this.logger.log(`Render started for chunk ${chunk.id}`);
-      // The Render service will webhook back to us with the rendered clip
+      // Render service returns "accepted" response, we don't wait for completion
+      const renderResult = response.data;
+      this.logger.log(`Render job accepted for chunk ${chunk.id}:`, JSON.stringify(renderResult, null, 2));
+      
+      // The render service will complete in background and send webhook when done
+      this.logger.log(`Render started for chunk ${chunk.id} -> clip ${savedClip.id} - processing in background`);
       
     } catch (error) {
       this.logger.error(`Render service failed for chunk ${chunk.id}:`, error);
+      
+      // Mark clip as failed if we created one
+      try {
+        const failedClip = await this.clipRepository.findOne({ 
+          where: { chunkId: chunk.id, status: ClipStatus.RENDERING } 
+        });
+        if (failedClip) {
+          failedClip.status = ClipStatus.FAILED;
+          failedClip.errorMessage = error instanceof Error ? error.message : String(error);
+          failedClip.retryCount += 1;
+          await this.clipRepository.save(failedClip);
+        }
+      } catch (updateError) {
+        this.logger.error(`Failed to update clip status after render error:`, updateError);
+      }
+      
       throw error;
     }
   }

@@ -84,8 +84,12 @@ export class ProcessingController {
   @ApiResponse({ status: 200, description: 'ASR completion processed' })
   async handleASRComplete(@Body() data: { streamId: string; chunkId: string; result: any }) {
     try {
-      await this.processingService.onASRComplete(data.streamId, data.chunkId, data.result);
-      return { success: true, message: 'ASR completion processed' };
+      // DISABLED: Using unified ProcessingQueueProcessor instead of old ProcessingService
+      this.logger.log(`ASR webhook received for chunk ${data.chunkId} - DISABLED (using unified pipeline)`);
+      return { success: true, message: 'ASR completion acknowledged (using unified pipeline)' };
+      
+      // OLD CODE DISABLED:
+      // await this.processingService.onASRComplete(data.streamId, data.chunkId, data.result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to handle ASR completion:`, errorMessage);
@@ -104,8 +108,12 @@ export class ProcessingController {
   @ApiResponse({ status: 200, description: 'Vision completion processed' })
   async handleVisionComplete(@Body() data: { streamId: string; chunkId: string; result: any }) {
     try {
-      await this.processingService.onVisionComplete(data.streamId, data.chunkId, data.result);
-      return { success: true, message: 'Vision completion processed' };
+      // DISABLED: Using unified ProcessingQueueProcessor instead of old ProcessingService
+      this.logger.log(`Vision webhook received for chunk ${data.chunkId} - DISABLED (using unified pipeline)`);
+      return { success: true, message: 'Vision completion acknowledged (using unified pipeline)' };
+      
+      // OLD CODE DISABLED:
+      // await this.processingService.onVisionComplete(data.streamId, data.chunkId, data.result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to handle Vision completion:`, errorMessage);
@@ -124,8 +132,12 @@ export class ProcessingController {
   @ApiResponse({ status: 200, description: 'Scoring completion processed' })
   async handleScoringComplete(@Body() data: { streamId: string; result: any }) {
     try {
-      await this.processingService.onScoringComplete(data.streamId, data.result);
-      return { success: true, message: 'Scoring completion processed' };
+      // DISABLED: Using unified ProcessingQueueProcessor instead of old ProcessingService
+      this.logger.log(`Scoring webhook received for stream ${data.streamId} - DISABLED (using unified pipeline)`);
+      return { success: true, message: 'Scoring completion acknowledged (using unified pipeline)' };
+      
+      // OLD CODE DISABLED:
+      // await this.processingService.onScoringComplete(data.streamId, data.result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to handle Scoring completion:`, errorMessage);

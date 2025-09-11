@@ -346,18 +346,20 @@ export class StreamsService {
         
         const chunkEntities = ingestionData.metadata.chunks.map((chunkData: any) => {
           console.log(`[StreamsService] Chunk data:`, chunkData);
-          console.log(`[StreamsService] Chunk data s3 url:`, chunkData.s3_url);
-          console.log(`[StreamsService] Chunk data file path:`, chunkData.file_path);
+          console.log(`[StreamsService] Chunk data s3 url:`, chunkData.s3Url || chunkData.s3_url);
+          console.log(`[StreamsService] Chunk data file path:`, chunkData.filePath || chunkData.file_path);
+          console.log(`[StreamsService] Chunk thumbnail s3 url:`, chunkData.thumbnailS3Url);
           const chunk = this.chunksRepository.create({
             streamId: id,
-            title: `Chunk ${Math.floor(chunkData.start_time / 60) + 1}`,
-            description: `Video chunk from ${chunkData.start_time}s to ${chunkData.end_time}s`,
-            startTime: chunkData.start_time,
-            endTime: chunkData.end_time,
+            title: `Chunk ${Math.floor((chunkData.startTime || chunkData.start_time) / 60) + 1}`,
+            description: `Video chunk from ${chunkData.startTime || chunkData.start_time}s to ${chunkData.endTime || chunkData.end_time}s`,
+            startTime: chunkData.startTime || chunkData.start_time,
+            endTime: chunkData.endTime || chunkData.end_time,
             duration: chunkData.duration,
-            status: ChunkStatus.COMPLETED,
-            videoPath: chunkData.s3_url || chunkData.file_path, // Use S3 URL if available, fallback to local path
-            audioPath: chunkData.s3_url || chunkData.file_path, // Use S3 URL for audio as well
+            status: ChunkStatus.PENDING,  // Set to PENDING so it gets processed
+            videoPath: chunkData.s3Url || chunkData.s3_url || chunkData.filePath || chunkData.file_path, // Use S3 URL if available, fallback to local path
+            audioPath: chunkData.s3Url || chunkData.s3_url || chunkData.filePath || chunkData.file_path, // Use S3 URL for audio as well
+            thumbnailPath: chunkData.thumbnailS3Url || chunkData.thumbnail_s3_url, // Set thumbnail path
             createdAt: new Date(),
             updatedAt: new Date(),
           });

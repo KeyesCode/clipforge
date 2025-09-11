@@ -5,12 +5,19 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import * as dotenv from 'dotenv';
+import * as bodyParser from 'body-parser';
 
 // Load environment variables
 dotenv.config();
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    bodyParser: false, // Disable default body parser to configure custom limits
+  });
+  
+  // Configure body parsers with larger limits for transcription data
+  app.use(bodyParser.json({ limit: '50mb' }));
+  app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
   
   // Get configuration service
   const configService = app.get(ConfigService);

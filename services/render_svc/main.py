@@ -88,11 +88,31 @@ class S3Client:
     def download_file(self, s3_key: str, local_path: str) -> bool:
         """Download file from S3 to local path"""
         try:
+            print(f"🎬 S3: Starting download - bucket: {self.bucket_name}, key: {s3_key}")
+            logger.info("Attempting S3 download", bucket=self.bucket_name, s3_key=s3_key, local_path=local_path)
+            
+            # First check if file exists
+            print(f"🎬 S3: Checking if file exists...")
+            try:
+                self.s3_client.head_object(Bucket=self.bucket_name, Key=s3_key)
+                print(f"🎬 S3: File exists, proceeding with download...")
+            except ClientError as head_error:
+                print(f"🎬 S3: File does not exist! Error: {head_error}")
+                logger.error("S3 file not found", bucket=self.bucket_name, s3_key=s3_key, error=str(head_error))
+                return False
+            
+            print(f"🎬 S3: Starting actual download...")
             self.s3_client.download_file(self.bucket_name, s3_key, local_path)
+            print(f"🎬 S3: Download completed successfully!")
             logger.info("Downloaded from S3", s3_key=s3_key, local_path=local_path)
             return True
         except ClientError as e:
-            logger.error("S3 download failed", s3_key=s3_key, error=str(e))
+            print(f"🎬 S3: Download failed with ClientError: {e}")
+            logger.error("S3 download failed", bucket=self.bucket_name, s3_key=s3_key, error=str(e))
+            return False
+        except Exception as e:
+            print(f"🎬 S3: Download failed with unexpected error: {e}")
+            logger.error("S3 download failed with unexpected error", bucket=self.bucket_name, s3_key=s3_key, error=str(e))
             return False
 
     def upload_file(self, local_path: str, s3_key: str) -> bool:
@@ -151,12 +171,25 @@ async def process_render_job(request: RenderRequest):
     clip_id = request.clipId
     
     try:
+        print(f"🎬 JOB: Starting background render job for clip {clip_id}")
+        
         # Update status
         processing_jobs[clip_id]["status"] = "processing"
         processing_jobs[clip_id]["started_at"] = datetime.utcnow().isoformat()
+        processing_jobs[clip_id]["progress"] = 0
+        
+        def update_progress(percentage: int, message: str):
+            processing_jobs[clip_id]["progress"] = percentage
+            processing_jobs[clip_id]["progress_message"] = message
+            print(f"🎬 PROGRESS: [{percentage:3d}%] {message}")
+            logger.info("Render progress", clip_id=clip_id, progress=percentage, message=message)
+        
+        print(f"🎬 JOB: Updated job status to processing, calling render_video_clip...")
         
         # Process the render
-        result = await render_video_clip(request)
+        result = await render_video_clip(request, update_progress)
+        
+        print(f"🎬 JOB: render_video_clip completed successfully!")
         
         # Update with results
         processing_jobs[clip_id].update({
@@ -165,10 +198,16 @@ async def process_render_job(request: RenderRequest):
             **result
         })
         
+        print(f"🎬 JOB: About to notify orchestrator webhook...")
+        
         # Notify orchestrator via webhook
         await notify_orchestrator_webhook(clip_id, result)
         
+        print(f"🎬 JOB: Webhook notification completed successfully!")
+        
     except Exception as e:
+        print(f"🎬 JOB: Render job failed with error: {e}")
+        print(f"🎬 JOB: Error type: {type(e)}")
         logger.error("Render job failed", clip_id=clip_id, error=str(e))
         processing_jobs[clip_id].update({
             "status": "failed",
@@ -176,25 +215,89 @@ async def process_render_job(request: RenderRequest):
             "failed_at": datetime.utcnow().isoformat()
         })
 
-async def render_video_clip(request: RenderRequest) -> Dict[str, Any]:
+async def render_video_clip(request: RenderRequest, update_progress=None) -> Dict[str, Any]:
     """Core video rendering logic"""
     import ffmpeg
     
     s3_client = S3Client()
     clip_id = request.clipId
     
+    logger.info("Starting render job", clip_id=clip_id, source_video=request.sourceVideo)
+    
+    if update_progress:
+        update_progress(5, "Initializing render job")
+    
     # Create working directory
     work_dir = os.path.join(TEMP_DIR, clip_id)
     os.makedirs(work_dir, exist_ok=True)
     
+    if update_progress:
+        update_progress(10, "Created working directory")
+    
     try:
         # Download source video from S3
-        source_s3_key = request.sourceVideo.split(f"{S3_BUCKET_NAME}/")[-1]
+        # Handle different source video formats
+        logger.info("Parsing source video URL", source_video=request.sourceVideo, bucket_name=S3_BUCKET_NAME)
+        
+        # Add explicit logging for debugging
+        print(f"🎬 RENDER: Starting URL parsing for {request.sourceVideo}")
+        print(f"🎬 RENDER: Bucket name is {S3_BUCKET_NAME}")
+        
+        if request.sourceVideo.startswith("s3://"):
+            # Full S3 URL format: s3://bucket-name/path/to/file
+            source_s3_key = request.sourceVideo.split(f"{S3_BUCKET_NAME}/")[-1]
+            logger.info("Parsed as S3 URL", s3_key=source_s3_key)
+        elif request.sourceVideo.startswith("http"):
+            # HTTP URL format like http://localhost:4566/clipforge-storage/chunks/...
+            # Extract everything after the bucket name
+            print(f"🎬 RENDER: Parsing HTTP URL: {request.sourceVideo}")
+            logger.info("Parsing HTTP URL", url=request.sourceVideo)
+            parts = request.sourceVideo.split(f"{S3_BUCKET_NAME}/")
+            print(f"🎬 RENDER: Split result: {parts}")
+            logger.info("Split by bucket name", parts=parts, bucket_name=S3_BUCKET_NAME)
+            if len(parts) > 1:
+                source_s3_key = parts[-1]
+                print(f"🎬 RENDER: Extracted S3 key: {source_s3_key}")
+                logger.info("Extracted S3 key from split", s3_key=source_s3_key)
+            else:
+                # Fallback: extract from URL path
+                from urllib.parse import urlparse
+                parsed_url = urlparse(request.sourceVideo)
+                path = parsed_url.path.lstrip('/')
+                logger.info("Fallback URL parsing", parsed_path=path)
+                if path.startswith(f"{S3_BUCKET_NAME}/"):
+                    source_s3_key = path[len(f"{S3_BUCKET_NAME}/"):]
+                    logger.info("Extracted S3 key from path", s3_key=source_s3_key)
+                else:
+                    source_s3_key = path
+                    logger.info("Using full path as S3 key", s3_key=source_s3_key)
+        else:
+            # Assume it's already a relative S3 key (e.g., "chunks/stream-id/chunk-id.mp4")
+            source_s3_key = request.sourceVideo
+            logger.info("Using direct S3 key", s3_key=source_s3_key)
+            
         source_local_path = os.path.join(work_dir, "source.mp4")
         
+        print(f"🎬 RENDER: About to download S3 file")
+        print(f"🎬 RENDER: S3 Key: {source_s3_key}")
+        print(f"🎬 RENDER: Local Path: {source_local_path}")
+        logger.info("Final S3 download parameters", s3_key=source_s3_key, bucket=S3_BUCKET_NAME, local_path=source_local_path)
+        
+        if update_progress:
+            update_progress(15, "Starting S3 download...")
+            
+        print(f"🎬 RENDER: Starting S3 download...")
         success = s3_client.download_file(source_s3_key, source_local_path)
+        print(f"🎬 RENDER: S3 download result: {success}")
+        
         if not success:
+            print(f"🎬 RENDER: S3 download failed!")
             raise Exception(f"Failed to download source video: {source_s3_key}")
+        
+        if update_progress:
+            update_progress(30, "S3 download completed")
+            
+        print(f"🎬 RENDER: S3 download successful, continuing with processing...")
         
         # Generate output paths
         output_filename = f"{clip_id}.mp4"
@@ -203,6 +306,9 @@ async def render_video_clip(request: RenderRequest) -> Dict[str, Any]:
         thumbnail_local_path = os.path.join(work_dir, thumbnail_filename)
         
         # Extract and render video segment
+        if update_progress:
+            update_progress(40, "Starting video segment extraction")
+            
         await extract_video_segment(
             source_local_path,
             output_local_path,
@@ -211,8 +317,14 @@ async def render_video_clip(request: RenderRequest) -> Dict[str, Any]:
             request.renderConfig
         )
         
+        if update_progress:
+            update_progress(60, "Video segment extraction completed")
+        
         # Add captions if provided
         if request.captions.segments:
+            if update_progress:
+                update_progress(70, "Adding captions to video")
+                
             captioned_path = os.path.join(work_dir, f"{clip_id}_captioned.mp4")
             await add_captions_to_video(
                 output_local_path,
@@ -221,22 +333,45 @@ async def render_video_clip(request: RenderRequest) -> Dict[str, Any]:
                 request.startTime
             )
             output_local_path = captioned_path
+            
+            if update_progress:
+                update_progress(80, "Caption overlay completed")
         
-        # Generate thumbnail
+        # Generate thumbnail  
+        if update_progress:
+            progress_val = 82 if not request.captions.segments else 82
+            update_progress(progress_val, "Generating thumbnail")
+            
+        print(f"🎬 RENDER: About to generate thumbnail...")
+        print(f"🎬 RENDER: Video file: {output_local_path}")
+        print(f"🎬 RENDER: Thumbnail target: {thumbnail_local_path}")
         await generate_thumbnail(output_local_path, thumbnail_local_path)
+        print(f"🎬 RENDER: Thumbnail generation completed")
+        
+        if update_progress:
+            update_progress(85, "Thumbnail generation completed")
         
         # Upload to S3
+        if update_progress:
+            update_progress(90, "Uploading to S3")
+            
         output_s3_key = f"rendered/{output_filename}"
         thumbnail_s3_key = f"thumbnails/{thumbnail_filename}"
         
         output_upload_success = s3_client.upload_file(output_local_path, output_s3_key)
         thumbnail_upload_success = s3_client.upload_file(thumbnail_local_path, thumbnail_s3_key)
         
+        if update_progress:
+            update_progress(95, "S3 upload completed")
+        
         if not output_upload_success:
             raise Exception("Failed to upload rendered video to S3")
         
         # Get file metadata
         file_size = os.path.getsize(output_local_path)
+        
+        if update_progress:
+            update_progress(100, "Render job completed successfully")
         
         return {
             "outputPath": f"s3://{S3_BUCKET_NAME}/{output_s3_key}",
@@ -299,51 +434,118 @@ async def add_captions_to_video(
     """Add captions overlay to video"""
     import ffmpeg
     
+    # Skip captions if no segments provided
+    if not captions.segments:
+        logger.info("No caption segments provided, copying video without captions")
+        # Just copy the file without captions
+        import shutil
+        shutil.copy2(input_path, output_path)
+        return
+    
     # Create subtitle file
     srt_path = input_path.replace('.mp4', '.srt')
+    logger.info(f"Creating subtitle file: {srt_path}")
     
-    with open(srt_path, 'w') as f:
+    subtitle_count = 0
+    with open(srt_path, 'w', encoding='utf-8') as f:
         for i, segment in enumerate(captions.segments, 1):
             # Adjust timing relative to video start
             start_adjusted = max(0, segment.start - video_start_time)
             end_adjusted = max(0, segment.end - video_start_time)
             
-            if start_adjusted >= 0 and end_adjusted > start_adjusted:
+            if start_adjusted >= 0 and end_adjusted > start_adjusted and segment.text.strip():
                 f.write(f"{i}\n")
                 f.write(f"{format_srt_time(start_adjusted)} --> {format_srt_time(end_adjusted)}\n")
-                f.write(f"{segment.text}\n\n")
+                f.write(f"{segment.text.strip()}\n\n")
+                subtitle_count += 1
+    
+    logger.info(f"Created {subtitle_count} subtitle entries")
+    
+    # If no valid subtitles, just copy the video
+    if subtitle_count == 0:
+        logger.info("No valid subtitles found, copying video without captions")
+        import shutil
+        shutil.copy2(input_path, output_path)
+        if os.path.exists(srt_path):
+            os.remove(srt_path)
+        return
     
     try:
-        # Apply captions with gaming style
+        # Apply captions with simpler, more reliable approach
+        logger.info("Applying captions with FFmpeg")
         stream = ffmpeg.input(input_path)
         stream = ffmpeg.filter(stream, 'subtitles', srt_path,
-                             force_style='FontName=Arial Bold,FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2')
+                             force_style='FontName=Arial,FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=1')
         stream = ffmpeg.output(stream, output_path,
                              vcodec='libx264',
                              acodec='aac', 
-                             crf=23)
-        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+                             crf=23,
+                             preset='medium')
+        ffmpeg.run(stream, overwrite_output=True, quiet=False, capture_stdout=True, capture_stderr=True)
+        
+        logger.info("Caption overlay completed successfully")
         
         # Cleanup subtitle file
-        os.remove(srt_path)
+        if os.path.exists(srt_path):
+            os.remove(srt_path)
         
     except ffmpeg.Error as e:
-        logger.error("FFmpeg error during caption overlay", error=str(e))
-        raise Exception(f"Caption overlay failed: {e}")
+        logger.error("FFmpeg error during caption overlay", error=str(e), stderr=e.stderr.decode() if e.stderr else "No stderr")
+        
+        # Fallback: copy video without captions
+        logger.info("Falling back to video without captions")
+        try:
+            import shutil
+            shutil.copy2(input_path, output_path)
+            logger.info("Fallback copy completed")
+        except Exception as copy_error:
+            logger.error("Fallback copy failed", error=str(copy_error))
+            raise Exception(f"Caption overlay failed and fallback copy failed: {copy_error}")
+        
+        # Cleanup subtitle file
+        if os.path.exists(srt_path):
+            os.remove(srt_path)
 
 async def generate_thumbnail(video_path: str, thumbnail_path: str):
     """Generate video thumbnail"""
     import ffmpeg
     
     try:
+        print(f"🎬 THUMBNAIL: Starting thumbnail generation")
+        print(f"🎬 THUMBNAIL: Source video: {video_path}")
+        print(f"🎬 THUMBNAIL: Target thumbnail: {thumbnail_path}")
+        
+        # Check if source video exists
+        if not os.path.exists(video_path):
+            print(f"🎬 THUMBNAIL: ERROR - Source video does not exist!")
+            logger.error("Thumbnail generation failed", error=f"Source video not found: {video_path}")
+            return
+        
+        print(f"🎬 THUMBNAIL: Source video exists, generating thumbnail...")
         stream = ffmpeg.input(video_path, ss=1)  # Take frame at 1 second
         stream = ffmpeg.filter(stream, 'scale', 480, 270)  # Thumbnail size
         stream = ffmpeg.output(stream, thumbnail_path, vframes=1)
-        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        
+        print(f"🎬 THUMBNAIL: Running FFmpeg command...")
+        ffmpeg.run(stream, overwrite_output=True, quiet=False)  # Enable output for debugging
+        
+        # Check if thumbnail was created
+        if os.path.exists(thumbnail_path):
+            print(f"🎬 THUMBNAIL: ✅ Thumbnail generated successfully!")
+            logger.info("Thumbnail generated successfully", thumbnail_path=thumbnail_path)
+        else:
+            print(f"🎬 THUMBNAIL: ❌ Thumbnail file not found after FFmpeg!")
+            logger.error("Thumbnail file not created", thumbnail_path=thumbnail_path)
         
     except ffmpeg.Error as e:
-        logger.error("Thumbnail generation failed", error=str(e))
+        print(f"🎬 THUMBNAIL: FFmpeg error: {e}")
+        print(f"🎬 THUMBNAIL: FFmpeg stderr: {e.stderr}")
+        logger.error("Thumbnail generation failed", error=str(e), stderr=e.stderr.decode() if e.stderr else None)
         # Don't fail the job if thumbnail fails
+        pass
+    except Exception as e:
+        print(f"🎬 THUMBNAIL: Unexpected error: {e}")
+        logger.error("Thumbnail generation unexpected error", error=str(e))
         pass
 
 def format_srt_time(seconds: float) -> str:
