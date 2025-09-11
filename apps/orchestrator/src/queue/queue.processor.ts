@@ -269,36 +269,18 @@ export class ProcessingQueueProcessor {
         // Don't fail the job, but log the error
       }
 
-      // Step 4: Render Service - Create highlight clips from top-scored chunks
-      this.logger.log(`Starting Render processing for stream ${streamId}`);
+      // Step 4: Render Service - Now handled via segment-based rendering in scoring step
+      this.logger.log(`Segment-based rendering already processed during scoring for stream ${streamId}`);
+      
+      // Mark processed chunks as completed
       try {
-        const topChunks = await this.chunkRepository.find({
-          where: { streamId, status: ChunkStatus.SCORED },
-          order: { highlightScore: 'DESC' },
-          take: 5, // Render top 5 highlights
-        });
-
-        for (const chunk of topChunks) {
-          if ((chunk.highlightScore ?? 0) > 0.3) { // Only render scoring chunks above threshold
-            this.logger.log(`Processing render for chunk ${chunk.id} with score ${chunk.highlightScore}:`, {
-              chunkId: chunk.id,
-              videoPath: chunk.videoPath,
-              audioPath: chunk.audioPath,
-              startTime: chunk.startTime,
-              duration: chunk.duration
-            });
-            await this.processRender(chunk);
-          }
-        }
-
-        // Mark processed chunks as completed
         await this.chunkRepository.update(
           { streamId, status: ChunkStatus.SCORED },
           { status: ChunkStatus.COMPLETED, processedAt: new Date() }
         );
+        this.logger.log(`Marked chunks as completed for stream ${streamId}`);
       } catch (error) {
-        this.logger.error(`Render processing failed for stream ${streamId}:`, error);
-        // Don't fail the job, but log the error
+        this.logger.error(`Failed to mark chunks as completed for stream ${streamId}:`, error);
       }
 
       // Update job status to completed

@@ -414,8 +414,15 @@ async def extract_video_segment(
         "720p": "1280x720"
     }
     
-    target_resolution = resolution_map.get(render_config.platform, render_config.resolution)
+    # Get target resolution, defaulting to 1080p if not found
+    target_resolution = resolution_map.get(render_config.platform, "1920x1080")
+    if 'x' not in target_resolution:
+        target_resolution = "1920x1080"  # Fallback
+    
     width, height = map(int, target_resolution.split('x'))
+    
+    print(f"🎬 EXTRACT: Render config platform: {render_config.platform}")
+    print(f"🎬 EXTRACT: Target resolution: {target_resolution} ({width}x{height})")
     
     try:
         print(f"🎬 EXTRACT: Starting video segment extraction")
@@ -427,29 +434,57 @@ async def extract_video_segment(
         
         # FFmpeg pipeline for video extraction and formatting
         # Use ss (seek start) and t (duration) for precise segment extraction
-        input_stream = ffmpeg.input(source_path, ss=start_time, t=duration)
+        print(f"🎬 EXTRACT: Creating input stream with ss={start_time}, t={duration}")
         
-        # Scale video to target resolution while preserving aspect ratio
-        video_stream = ffmpeg.filter(input_stream, 'scale', width, height, force_original_aspect_ratio='decrease')
-        video_stream = ffmpeg.filter(video_stream, 'pad', width, height, '(ow-iw)/2', '(oh-ih)/2', 'black')
-        
-        # Create output with both video and audio
-        output_stream = ffmpeg.output(
-            video_stream, output_path,
+        # Simplified approach: extract segment first, then scale
+        output_stream = ffmpeg.input(source_path, ss=start_time, t=duration).output(
+            output_path,
+            vf=f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black',
             vcodec='libx264',
             acodec='aac',
             crf=23,
             preset='medium',
-            movflags='faststart',  # Optimize for streaming
-            audio_bitrate='128k'  # Ensure audio bitrate
+            movflags='faststart',
+            strict='-2',
+            loglevel='info'  # Enable more logging
         )
         
         print(f"🎬 EXTRACT: Running FFmpeg command...")
         
         # Run with verbose output for debugging
-        ffmpeg.run(output_stream, overwrite_output=True, quiet=False, capture_stdout=True, capture_stderr=True)
+        print(f"🎬 EXTRACT: About to run FFmpeg command")
+        result = ffmpeg.run(output_stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+        print(f"🎬 EXTRACT: FFmpeg command completed")
         
         print(f"🎬 EXTRACT: ✅ Video segment extraction completed successfully!")
+        
+        # Check the output file properties
+        if os.path.exists(output_path):
+            file_size = os.path.getsize(output_path)
+            print(f"🎬 EXTRACT: Output file size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            
+            # Try to get video info
+            try:
+                probe = ffmpeg.probe(output_path)
+                video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+                audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
+                
+                print(f"🎬 EXTRACT: Output resolution: {video_info.get('width', 'unknown')}x{video_info.get('height', 'unknown')}")
+                print(f"🎬 EXTRACT: Output duration: {video_info.get('duration', 'unknown')}s")
+                print(f"🎬 EXTRACT: Audio streams found: {len(audio_streams)}")
+                
+                if audio_streams:
+                    audio_info = audio_streams[0]
+                    print(f"🎬 EXTRACT: Audio codec: {audio_info.get('codec_name', 'unknown')}")
+                    print(f"🎬 EXTRACT: Audio bitrate: {audio_info.get('bit_rate', 'unknown')}")
+                else:
+                    print(f"🎬 EXTRACT: ❌ WARNING: No audio streams found in output!")
+                    
+            except Exception as probe_error:
+                print(f"🎬 EXTRACT: Could not probe output file: {probe_error}")
+        else:
+            print(f"🎬 EXTRACT: ❌ ERROR: Output file was not created!")
+        
         logger.info("Video segment extracted successfully", 
                    source=source_path, 
                    output=output_path,
@@ -459,11 +494,20 @@ async def extract_video_segment(
         
     except ffmpeg.Error as e:
         print(f"🎬 EXTRACT: ❌ FFmpeg error: {e}")
+        stderr_output = ""
         if hasattr(e, 'stderr') and e.stderr:
-            print(f"🎬 EXTRACT: FFmpeg stderr: {e.stderr.decode()}")
-            logger.error("FFmpeg stderr", stderr=e.stderr.decode())
-        logger.error("FFmpeg error during extraction", error=str(e))
-        raise Exception(f"Video extraction failed: {e}")
+            stderr_output = e.stderr.decode() if isinstance(e.stderr, bytes) else str(e.stderr)
+            print(f"🎬 EXTRACT: FFmpeg stderr: {stderr_output}")
+            logger.error("FFmpeg stderr", stderr=stderr_output)
+        
+        # Also try to get stdout
+        stdout_output = ""
+        if hasattr(e, 'stdout') and e.stdout:
+            stdout_output = e.stdout.decode() if isinstance(e.stdout, bytes) else str(e.stdout)
+            print(f"🎬 EXTRACT: FFmpeg stdout: {stdout_output}")
+        
+        logger.error("FFmpeg error during extraction", error=str(e), stderr=stderr_output, stdout=stdout_output)
+        raise Exception(f"Video extraction failed: {e} | stderr: {stderr_output}")
     except Exception as e:
         print(f"🎬 EXTRACT: ❌ Unexpected error: {e}")
         logger.error("Unexpected error during extraction", error=str(e))
