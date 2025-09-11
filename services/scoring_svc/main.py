@@ -19,6 +19,15 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 import structlog
 
+# Import segment creation functions
+from segment_creators import (
+    create_speech_based_segments, create_audio_peak_segments, 
+    create_vision_event_segments, create_fusion_segments,
+    score_highlight_segment, calculate_segment_confidence,
+    get_segment_score_breakdown, get_segment_reasons,
+    remove_overlapping_segments
+)
+
 # Configure structured logging
 structlog.configure(
     processors=[
@@ -151,7 +160,7 @@ async def process_scoring_job(request: ScoringRequest):
         })
 
 async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, Any]]:
-    """Core scoring logic"""
+    """Core scoring logic with content-aware highlight detection"""
     highlights = []
     
     print(f"🎯 ANALYZE: Processing {len(chunks)} chunks with threshold {HIGHLIGHT_THRESHOLD}")
@@ -162,61 +171,282 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
         print(f"🎯 CHUNK {i+1}: Has vision: {bool(chunk.chunkData.vision)}")
         print(f"🎯 CHUNK {i+1}: Has audio: {bool(chunk.chunkData.audioFeatures)}")
         
-        if chunk.chunkData.transcription:
-            # Try multiple ways to extract text from transcription
-            transcription = chunk.chunkData.transcription
-            text = ""
-            
-            if isinstance(transcription, str):
-                text = transcription
-            elif isinstance(transcription, dict):
-                # Try getting text field first  
-                text = transcription.get("text", "")
-                
-                # If no text field, extract from segments (Whisper format)
-                if not text and transcription.get("segments"):
-                    segments = transcription["segments"]
-                    if isinstance(segments, list):
-                        text_parts = []
-                        for seg in segments:
-                            if isinstance(seg, dict) and seg.get("text"):
-                                text_parts.append(seg["text"].strip())
-                        text = " ".join(text_parts)
-                        print(f"🎯 DEBUG: Extracted {len(text_parts)} segments from Whisper format")
-                
-                # Fallback: try getting from 'transcript' field
-                if not text and transcription.get("transcript"):
-                    text = transcription["transcript"]
-            
-            print(f"🎯 CHUNK {i+1}: Transcription type: {type(transcription)}")
-            print(f"🎯 CHUNK {i+1}: Transcription keys: {list(transcription.keys()) if isinstance(transcription, dict) else 'N/A'}")
-            print(f"🎯 CHUNK {i+1}: Extracted text length: {len(text)}")
-            print(f"🎯 CHUNK {i+1}: Text preview: '{text[:200]}...'")
+        # Find optimal highlight segments within this chunk
+        highlight_segments = await find_highlight_segments_in_chunk(chunk)
         
-        score = calculate_chunk_score(chunk)
-        print(f"🎯 CHUNK {i+1}: Final score: {score} (threshold: {HIGHLIGHT_THRESHOLD})")
+        print(f"🎯 CHUNK {i+1}: Found {len(highlight_segments)} potential segments")
         
-        if score >= HIGHLIGHT_THRESHOLD:
-            print(f"🎯 CHUNK {i+1}: ✅ HIGHLIGHT! Adding to results")
-            highlights.append({
-                "chunkId": chunk.chunkId,
-                "score": score,
-                "startTime": chunk.chunkData.startTime,
-                "duration": chunk.chunkData.duration,
-                "reasons": get_scoring_reasons(chunk, score),
-                "metadata": {
-                    "transcription_length": len(chunk.chunkData.transcription.get("text", "")) if chunk.chunkData.transcription else 0,
-                    "face_detected": chunk.chunkData.vision.get("faces_detected", False) if chunk.chunkData.vision else False
-                }
-            })
-        else:
-            print(f"🎯 CHUNK {i+1}: ❌ Below threshold, skipping")
+        # Add qualifying segments to highlights
+        for segment in highlight_segments:
+            if segment["score"] >= HIGHLIGHT_THRESHOLD:
+                print(f"🎯 SEGMENT: ✅ HIGHLIGHT! Score={segment['score']:.3f}, Duration={segment['duration']:.1f}s")
+                highlights.append({
+                    "chunkId": chunk.chunkId,
+                    "score": segment["score"],
+                    "breakdown": segment["breakdown"],
+                    "suggestedSegments": [{
+                        "startTime": segment["startTime"],  # Relative to chunk start
+                        "duration": segment["duration"],
+                        "confidence": segment["confidence"],
+                        "reason": segment["reason"],
+                        "absoluteStartTime": chunk.chunkData.startTime + segment["startTime"]  # Absolute time in stream
+                    }],
+                    "reasons": segment["reasons"],
+                    "metadata": {
+                        "chunk_duration": chunk.chunkData.duration,
+                        "transcription_length": len(extract_transcription_text(chunk.chunkData.transcription)) if chunk.chunkData.transcription else 0,
+                        "face_detected": chunk.chunkData.vision.get("faces_detected", False) if chunk.chunkData.vision else False
+                    }
+                })
+            else:
+                print(f"🎯 SEGMENT: ❌ Below threshold, score={segment['score']:.3f}")
     
-    print(f"🎯 ANALYZE: Found {len(highlights)} highlights out of {len(chunks)} chunks")
+    print(f"🎯 ANALYZE: Found {len(highlights)} highlights from {len(chunks)} chunks")
     
     # Sort by score descending
     highlights.sort(key=lambda x: x["score"], reverse=True)
     return highlights
+
+async def find_highlight_segments_in_chunk(chunk: ChunkInput) -> List[Dict[str, Any]]:
+    """Find optimal highlight segments within a chunk using content analysis"""
+    segments = []
+    duration = chunk.chunkData.duration
+    
+    print(f"🎯 SEGMENT_ANALYSIS: Analyzing chunk {chunk.chunkId} (duration: {duration}s)")
+    
+    # Extract all available data
+    transcription_segments = extract_transcription_segments(chunk.chunkData.transcription)
+    audio_peaks = analyze_audio_peaks(chunk.chunkData.audioFeatures, duration)
+    vision_events = analyze_vision_events(chunk.chunkData.vision, duration)
+    
+    # Create candidate segments based on different approaches
+    candidates = []
+    
+    # Approach 1: Transcription-based segments (speech events)
+    candidates.extend(create_speech_based_segments(transcription_segments, duration))
+    
+    # Approach 2: Audio peak-based segments (energy spikes)
+    candidates.extend(create_audio_peak_segments(audio_peaks, duration))
+    
+    # Approach 3: Vision event-based segments (scene changes, motion)
+    candidates.extend(create_vision_event_segments(vision_events, duration))
+    
+    # Approach 4: Multi-modal fusion segments (combine all data)
+    candidates.extend(create_fusion_segments(transcription_segments, audio_peaks, vision_events, duration))
+    
+    print(f"🎯 SEGMENT_ANALYSIS: Generated {len(candidates)} candidate segments")
+    
+    # Score and filter candidates
+    for candidate in candidates:
+        candidate["score"] = score_highlight_segment(
+            candidate, chunk, transcription_segments, audio_peaks, vision_events
+        )
+        candidate["confidence"] = calculate_segment_confidence(candidate, chunk)
+        candidate["breakdown"] = get_segment_score_breakdown(candidate, chunk)
+        candidate["reasons"] = get_segment_reasons(candidate, chunk)
+    
+    # Filter by minimum duration and score
+    valid_candidates = [
+        c for c in candidates 
+        if c["duration"] >= MIN_HIGHLIGHT_DURATION 
+        and c["duration"] <= MAX_HIGHLIGHT_DURATION
+        and c["score"] > 0.1
+    ]
+    
+    # Remove overlapping segments, keeping highest scored
+    final_segments = remove_overlapping_segments(valid_candidates)
+    
+    print(f"🎯 SEGMENT_ANALYSIS: Selected {len(final_segments)} final segments")
+    
+    return final_segments
+
+def extract_transcription_text(transcription: Optional[Dict[str, Any]]) -> str:
+    """Extract text from transcription data"""
+    if not transcription:
+        return ""
+    
+    if isinstance(transcription, str):
+        return transcription
+    elif isinstance(transcription, dict):
+        # Try getting text field first
+        text = transcription.get("text", "")
+        
+        # If no text field, extract from segments (Whisper format)
+        if not text and transcription.get("segments"):
+            segments = transcription["segments"]
+            if isinstance(segments, list):
+                text_parts = []
+                for seg in segments:
+                    if isinstance(seg, dict) and seg.get("text"):
+                        text_parts.append(seg["text"].strip())
+                text = " ".join(text_parts)
+        
+        # Fallback: try getting from 'transcript' field
+        if not text and transcription.get("transcript"):
+            text = transcription["transcript"]
+        
+        return text
+    
+    return ""
+
+def extract_transcription_segments(transcription: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract timed segments from transcription data"""
+    segments = []
+    
+    if not transcription or not isinstance(transcription, dict):
+        return segments
+    
+    # Whisper format with segments
+    if transcription.get("segments"):
+        whisper_segments = transcription["segments"]
+        if isinstance(whisper_segments, list):
+            for seg in whisper_segments:
+                if isinstance(seg, dict) and all(k in seg for k in ["start", "end", "text"]):
+                    segments.append({
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "duration": seg["end"] - seg["start"],
+                        "text": seg["text"].strip(),
+                        "confidence": seg.get("confidence", 1.0)
+                    })
+    
+    return segments
+
+def analyze_audio_peaks(audio_features: Optional[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
+    """Analyze audio data to find energy peaks and interesting moments"""
+    peaks = []
+    
+    if not audio_features or not isinstance(audio_features, dict):
+        return peaks
+    
+    # Energy-based peaks
+    if audio_features.get("energy"):
+        energy_data = audio_features["energy"]
+        if isinstance(energy_data, list) and len(energy_data) > 0:
+            # Find peaks in energy data
+            energy_peaks = find_peaks_in_signal(energy_data, duration)
+            peaks.extend([{**peak, "type": "energy"} for peak in energy_peaks])
+    
+    # Volume-based peaks
+    if audio_features.get("volume"):
+        volume_data = audio_features["volume"]
+        if isinstance(volume_data, list) and len(volume_data) > 0:
+            volume_peaks = find_peaks_in_signal(volume_data, duration)
+            peaks.extend([{**peak, "type": "volume"} for peak in volume_peaks])
+    
+    # Spectral features (if available)
+    if audio_features.get("spectral_features"):
+        spectral = audio_features["spectral_features"]
+        if isinstance(spectral, dict):
+            # Look for spectral changes that might indicate interesting moments
+            if spectral.get("mfcc"):
+                mfcc_peaks = analyze_spectral_changes(spectral["mfcc"], duration)
+                peaks.extend([{**peak, "type": "spectral"} for peak in mfcc_peaks])
+    
+    return peaks
+
+def analyze_vision_events(vision_data: Optional[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
+    """Analyze vision data to find interesting visual events"""
+    events = []
+    
+    if not vision_data or not isinstance(vision_data, dict):
+        return events
+    
+    # Scene changes
+    if vision_data.get("scene_changes"):
+        scene_changes = vision_data["scene_changes"]
+        if isinstance(scene_changes, list):
+            for change in scene_changes:
+                if isinstance(change, dict) and "timestamp" in change:
+                    events.append({
+                        "start": max(0, change["timestamp"] - 2),
+                        "end": min(duration, change["timestamp"] + 3),
+                        "type": "scene_change",
+                        "intensity": change.get("intensity", 0.5)
+                    })
+    
+    # Motion intensity peaks
+    if vision_data.get("motion_intensity"):
+        motion = vision_data["motion_intensity"]
+        if isinstance(motion, list):
+            motion_events = find_peaks_in_signal(motion, duration, threshold=0.6)
+            events.extend([{**event, "type": "motion"} for event in motion_events])
+    
+    # Face detection events
+    if vision_data.get("face_tracking"):
+        face_data = vision_data["face_tracking"]
+        if isinstance(face_data, list):
+            for face_event in face_data:
+                if isinstance(face_event, dict) and "timestamp" in face_event:
+                    events.append({
+                        "start": max(0, face_event["timestamp"] - 1),
+                        "end": min(duration, face_event["timestamp"] + 4),
+                        "type": "face_detected",
+                        "confidence": face_event.get("confidence", 0.5)
+                    })
+    
+    return events
+
+def find_peaks_in_signal(signal_data: List[float], duration: float, threshold: float = 0.7) -> List[Dict[str, Any]]:
+    """Find peaks in a signal array"""
+    peaks = []
+    
+    if not signal_data or len(signal_data) < 3:
+        return peaks
+    
+    # Calculate time step
+    time_step = duration / len(signal_data)
+    
+    # Find local maxima above threshold
+    for i in range(1, len(signal_data) - 1):
+        current = signal_data[i]
+        prev_val = signal_data[i-1]
+        next_val = signal_data[i+1]
+        
+        # Check if it's a local maximum above threshold
+        if (current > prev_val and current > next_val and current > threshold):
+            peak_time = i * time_step
+            # Create a segment around the peak
+            segment_start = max(0, peak_time - 5)  # 5 seconds before
+            segment_end = min(duration, peak_time + 10)  # 10 seconds after
+            
+            peaks.append({
+                "start": segment_start,
+                "end": segment_end,
+                "peak_time": peak_time,
+                "intensity": current
+            })
+    
+    return peaks
+
+def analyze_spectral_changes(mfcc_data: List[List[float]], duration: float) -> List[Dict[str, Any]]:
+    """Analyze spectral changes in MFCC data"""
+    changes = []
+    
+    if not mfcc_data or len(mfcc_data) < 2:
+        return changes
+    
+    time_step = duration / len(mfcc_data)
+    
+    # Calculate spectral flux (measure of change)
+    for i in range(1, len(mfcc_data)):
+        if isinstance(mfcc_data[i], list) and isinstance(mfcc_data[i-1], list):
+            # Calculate euclidean distance between consecutive MFCC vectors
+            diff = sum((a - b) ** 2 for a, b in zip(mfcc_data[i], mfcc_data[i-1]) 
+                      if isinstance(a, (int, float)) and isinstance(b, (int, float)))
+            flux = diff ** 0.5
+            
+            # If change is significant, mark as interesting
+            if flux > 2.0:  # Threshold for significant spectral change
+                change_time = i * time_step
+                changes.append({
+                    "start": max(0, change_time - 3),
+                    "end": min(duration, change_time + 7),
+                    "change_time": change_time,
+                    "intensity": min(flux / 5.0, 1.0)  # Normalize
+                })
+    
+    return changes
 
 def calculate_chunk_score(chunk: ChunkInput) -> float:
     """Calculate engagement score for chunk"""

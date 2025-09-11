@@ -379,7 +379,7 @@ export class ProcessingService {
       
       // Convert S3 URLs to HTTP URLs for frontend access
       clip.renderedFilePath = this.convertS3ToHttpUrl(s3OutputPath);
-      clip.thumbnailPath = s3ThumbnailPath ? this.convertS3ToHttpUrl(s3ThumbnailPath) : null;
+      clip.thumbnailPath = s3ThumbnailPath ? this.convertS3ToHttpUrl(s3ThumbnailPath) : undefined;
       clip.status = ClipStatus.RENDERED;
       clip.renderedAt = new Date();
       

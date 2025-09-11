@@ -551,15 +551,33 @@ export class ProcessingQueueProcessor {
         // Poll for Scoring completion and get results
         const scoresResult = await this.pollScoringCompletion(scoringServiceUrl, streamId);
         if (scoresResult && scoresResult.highlights) {
-          // Update chunks with their highlight scores
+          // Update chunks with their highlight scores AND process suggested segments
           for (const highlight of scoresResult.highlights) {
             await this.chunkRepository.update(highlight.chunkId, {
               highlightScore: highlight.score,
               scoreBreakdown: highlight.breakdown,
               updatedAt: new Date(),
             });
+
+            // Process suggested segments for rendering (NEW)
+            if (highlight.suggestedSegments && highlight.suggestedSegments.length > 0) {
+              for (const segment of highlight.suggestedSegments) {
+                this.logger.log(`Creating clip for suggested segment in chunk ${highlight.chunkId}:`, {
+                  startTime: segment.startTime,
+                  duration: segment.duration,
+                  absoluteStartTime: segment.absoluteStartTime,
+                  reason: segment.reason
+                });
+
+                // Get the chunk data for rendering
+                const chunk = await this.chunkRepository.findOne({ where: { id: highlight.chunkId } });
+                if (chunk) {
+                  await this.processRenderForSegment(chunk, segment, highlight);
+                }
+              }
+            }
           }
-          this.logger.log(`Saved highlight scores for ${scoresResult.highlights.length} chunks`);
+          this.logger.log(`Saved highlight scores for ${scoresResult.highlights.length} chunks and processed ${scoresResult.highlights.reduce((acc: number, h: any) => acc + (h.suggestedSegments?.length || 0), 0)} segments`);
         } else {
           this.logger.warn(`No scores data received for stream ${streamId}`);
         }
@@ -617,7 +635,136 @@ export class ProcessingQueueProcessor {
   }
 
   /**
-   * Process chunk through Render service
+   * Process a specific segment within a chunk for rendering (NEW)
+   */
+  private async processRenderForSegment(chunk: Chunk, segment: any, highlight: any): Promise<void> {
+    const renderServiceUrl = this.configService.get<string>('RENDER_SERVICE_URL', 'http://localhost:8005');
+    
+    try {
+      // Create a clip entity for this specific segment
+      const clip = this.clipRepository.create({
+        streamId: chunk.streamId,
+        chunkId: chunk.id,
+        sourceChunkId: chunk.id,
+        title: `Highlight: ${segment.reason || 'Auto-detected moment'}`,
+        description: `Smart highlight detected with confidence ${segment.confidence} - ${segment.reason}`,
+        status: ClipStatus.RENDERING,
+        startTime: segment.absoluteStartTime, // Absolute time in stream
+        endTime: segment.absoluteStartTime + segment.duration,
+        duration: segment.duration,
+        score: highlight.score,
+        highlightScore: highlight.score,
+        scoreBreakdown: highlight.breakdown,
+        renderSettings: {
+          aspectRatio: ClipAspectRatio.VERTICAL,
+          quality: 'high' as const,
+        },
+        captionSettings: {
+          enabled: true,
+          style: 'gaming',
+          fontSize: 24,
+          fontFamily: 'Arial',
+          color: '#ffffff',
+          backgroundColor: '#000000',
+          position: 'bottom' as const,
+          maxWordsPerLine: 4,
+          wordsPerSecond: 2.5,
+        },
+        retryCount: 0,
+        approvalStatus: 'pending' as const,
+      });
+      
+      const savedClip = await this.clipRepository.save(clip);
+      this.logger.log(`Created clip entity ${savedClip.id} for segment in chunk ${chunk.id}`);
+      
+      // Calculate the render timing relative to the chunk's source video
+      const renderRequest = {
+        clipId: savedClip.id,
+        sourceVideo: chunk.videoPath,
+        startTime: segment.absoluteStartTime, // Use absolute time for render service
+        duration: segment.duration, // Use the precise segment duration
+        renderConfig: {
+          format: 'mp4',
+          resolution: '1080p',
+          platform: 'youtube_shorts',
+        },
+        captions: {
+          segments: this.extractCaptionSegmentsForTimeRange(
+            chunk.transcription?.segments || [], 
+            segment.absoluteStartTime, 
+            segment.absoluteStartTime + segment.duration
+          ),
+          style: 'gaming',
+        },
+        effects: [],
+      };
+
+      this.logger.log(`Sending render request for segment in chunk ${chunk.id} -> clip ${savedClip.id}:`, {
+        clipId: renderRequest.clipId,
+        sourceVideo: renderRequest.sourceVideo,
+        startTime: renderRequest.startTime,
+        duration: renderRequest.duration,
+        segmentReason: segment.reason,
+        segmentConfidence: segment.confidence
+      });
+
+      const response = await firstValueFrom(
+        this.httpService.post(`${renderServiceUrl}/render`, renderRequest, {
+          timeout: 300000, // 5 minutes timeout
+        })
+      );
+
+      const renderResult = response.data;
+      this.logger.log(`Render job accepted for segment clip ${savedClip.id}:`, JSON.stringify(renderResult, null, 2));
+      
+      this.logger.log(`Render started for segment in chunk ${chunk.id} -> clip ${savedClip.id} - processing in background`);
+      
+    } catch (error) {
+      this.logger.error(`Render service failed for segment in chunk ${chunk.id}:`, error);
+      
+      // Mark clip as failed if we created one
+      try {
+        const failedClip = await this.clipRepository.findOne({ 
+          where: { chunkId: chunk.id, status: ClipStatus.RENDERING } 
+        });
+        if (failedClip) {
+          failedClip.status = ClipStatus.FAILED;
+          failedClip.errorMessage = error instanceof Error ? error.message : String(error);
+          failedClip.retryCount += 1;
+          await this.clipRepository.save(failedClip);
+        }
+      } catch (updateError) {
+        this.logger.error(`Failed to update clip status after render error:`, updateError);
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Extract caption segments for a specific time range
+   */
+  private extractCaptionSegmentsForTimeRange(segments: any[], startTime: number, endTime: number): any[] {
+    if (!segments || !Array.isArray(segments)) {
+      return [];
+    }
+
+    return segments.filter(seg => {
+      const segStart = seg.start || 0;
+      const segEnd = seg.end || segStart + 1;
+      
+      // Include segment if it overlaps with our time range
+      return segStart < endTime && segEnd > startTime;
+    }).map(seg => ({
+      ...seg,
+      // Adjust timing to be relative to the clip start
+      start: Math.max(0, (seg.start || 0) - startTime),
+      end: Math.max(0, (seg.end || seg.start + 1) - startTime)
+    }));
+  }
+
+  /**
+   * Process chunk through Render service (LEGACY - still used for fallback)
    */
   private async processRender(chunk: Chunk): Promise<void> {
     const renderServiceUrl = this.configService.get<string>('RENDER_SERVICE_URL', 'http://localhost:8005');
@@ -662,8 +809,8 @@ export class ProcessingQueueProcessor {
       const renderRequest = {
         clipId: savedClip.id,
         sourceVideo: chunk.videoPath,
-        startTime: chunk.startTime,
-        duration: chunk.duration,
+        startTime: chunk.startTime, // Start time within the source video
+        duration: chunk.duration, // Duration of the segment to extract
         renderConfig: {
           format: 'mp4',
           resolution: '1080p',

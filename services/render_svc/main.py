@@ -309,6 +309,13 @@ async def render_video_clip(request: RenderRequest, update_progress=None) -> Dic
         if update_progress:
             update_progress(40, "Starting video segment extraction")
             
+        print(f"🎬 RENDER: Extracting segment - start: {request.startTime}s, duration: {request.duration}s")
+        logger.info("Video segment extraction parameters", 
+                   start_time=request.startTime, 
+                   duration=request.duration,
+                   source=source_local_path,
+                   output=output_local_path)
+            
         await extract_video_segment(
             source_local_path,
             output_local_path,
@@ -411,18 +418,55 @@ async def extract_video_segment(
     width, height = map(int, target_resolution.split('x'))
     
     try:
+        print(f"🎬 EXTRACT: Starting video segment extraction")
+        print(f"🎬 EXTRACT: Source: {source_path}")
+        print(f"🎬 EXTRACT: Output: {output_path}")
+        print(f"🎬 EXTRACT: Start time: {start_time}s")
+        print(f"🎬 EXTRACT: Duration: {duration}s")
+        print(f"🎬 EXTRACT: Target resolution: {width}x{height}")
+        
         # FFmpeg pipeline for video extraction and formatting
-        stream = ffmpeg.input(source_path, ss=start_time, t=duration)
-        stream = ffmpeg.filter(stream, 'scale', width, height)
-        stream = ffmpeg.output(stream, output_path, 
-                             vcodec='libx264',
-                             acodec='aac',
-                             crf=23,
-                             preset='medium')
-        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        # Use ss (seek start) and t (duration) for precise segment extraction
+        input_stream = ffmpeg.input(source_path, ss=start_time, t=duration)
+        
+        # Scale video to target resolution while preserving aspect ratio
+        video_stream = ffmpeg.filter(input_stream, 'scale', width, height, force_original_aspect_ratio='decrease')
+        video_stream = ffmpeg.filter(video_stream, 'pad', width, height, '(ow-iw)/2', '(oh-ih)/2', 'black')
+        
+        # Create output with both video and audio
+        output_stream = ffmpeg.output(
+            video_stream, output_path,
+            vcodec='libx264',
+            acodec='aac',
+            crf=23,
+            preset='medium',
+            movflags='faststart',  # Optimize for streaming
+            audio_bitrate='128k'  # Ensure audio bitrate
+        )
+        
+        print(f"🎬 EXTRACT: Running FFmpeg command...")
+        
+        # Run with verbose output for debugging
+        ffmpeg.run(output_stream, overwrite_output=True, quiet=False, capture_stdout=True, capture_stderr=True)
+        
+        print(f"🎬 EXTRACT: ✅ Video segment extraction completed successfully!")
+        logger.info("Video segment extracted successfully", 
+                   source=source_path, 
+                   output=output_path,
+                   start_time=start_time,
+                   duration=duration,
+                   resolution=f"{width}x{height}")
         
     except ffmpeg.Error as e:
+        print(f"🎬 EXTRACT: ❌ FFmpeg error: {e}")
+        if hasattr(e, 'stderr') and e.stderr:
+            print(f"🎬 EXTRACT: FFmpeg stderr: {e.stderr.decode()}")
+            logger.error("FFmpeg stderr", stderr=e.stderr.decode())
         logger.error("FFmpeg error during extraction", error=str(e))
+        raise Exception(f"Video extraction failed: {e}")
+    except Exception as e:
+        print(f"🎬 EXTRACT: ❌ Unexpected error: {e}")
+        logger.error("Unexpected error during extraction", error=str(e))
         raise Exception(f"Video extraction failed: {e}")
 
 async def add_captions_to_video(
