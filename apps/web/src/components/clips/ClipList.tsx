@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { ClipCard } from './ClipCard';
 import { ClipFilters } from './ClipFilters';
 import { ClipBulkActions } from './ClipBulkActions';
+import { VideoPlayerModal } from './VideoPlayerModal';
 import { LoadingSpinner } from '../ui/LoadingSpinner';
 import { EmptyState } from '../ui/EmptyState';
 import { Pagination } from '../ui/Pagination';
@@ -40,6 +41,7 @@ export function ClipList({
   });
   
   const [selectedClips, setSelectedClips] = useState<string[]>([]);
+  const [playingClip, setPlayingClip] = useState<Clip | null>(null);
   
   const { data, isLoading, error } = useClips(filters);
   const reviewMutation = useReviewClip();
@@ -139,9 +141,13 @@ export function ClipList({
   };
 
   const handlePlay = (clip: Clip) => {
-    // TODO: Implement video player modal
-    console.log('Playing clip:', clip.id);
-    toast.success('Video player coming soon!');
+    // Check if clip has rendered file path
+    if (!clip.renderedFilePath) {
+      toast.error('Video not available - clip may still be rendering');
+      return;
+    }
+    
+    setPlayingClip(clip);
   };
 
   if (error) {
@@ -263,6 +269,14 @@ export function ClipList({
           />
         </>
       )}
+
+      {/* Video Player Modal */}
+      <VideoPlayerModal
+        clip={playingClip}
+        isOpen={playingClip !== null}
+        onClose={() => setPlayingClip(null)}
+        onDownload={handleDownload}
+      />
     </div>
   );
 }

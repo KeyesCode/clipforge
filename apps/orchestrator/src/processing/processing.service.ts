@@ -369,16 +369,57 @@ export class ProcessingService {
    * Handle Rendering completion
    */
   async onRenderingComplete(clipId: string, renderResult: any): Promise<void> {
-    this.logger.log(`Rendering completed for clip ${clipId}`);
+    this.logger.log(`Rendering completed for clip ${clipId}`, renderResult);
 
     const clip = await this.clipRepository.findOne({ where: { id: clipId } });
     if (clip) {
-      clip.renderedFilePath = renderResult.renderedS3Url;
-      clip.thumbnailPath = renderResult.thumbnailS3Url;
+      // Handle both field name formats for backward compatibility
+      const s3OutputPath = renderResult.renderedS3Url || renderResult.outputPath;
+      const s3ThumbnailPath = renderResult.thumbnailS3Url || renderResult.thumbnailPath;
+      
+      // Convert S3 URLs to HTTP URLs for frontend access
+      clip.renderedFilePath = this.convertS3ToHttpUrl(s3OutputPath);
+      clip.thumbnailPath = s3ThumbnailPath ? this.convertS3ToHttpUrl(s3ThumbnailPath) : null;
       clip.status = ClipStatus.RENDERED;
       clip.renderedAt = new Date();
+      
+      // Update metadata if provided
+      if (renderResult.metadata) {
+        clip.metadata = {
+          ...clip.metadata,
+          ...renderResult.metadata
+        };
+      }
+      
       await this.clipRepository.save(clip);
+      this.logger.log(`Clip ${clipId} marked as rendered successfully with HTTP URLs`, {
+        renderedFilePath: clip.renderedFilePath,
+        thumbnailPath: clip.thumbnailPath
+      });
+    } else {
+      this.logger.error(`Clip ${clipId} not found when marking as rendered`);
     }
+  }
+
+  /**
+   * Convert S3 URL to HTTP URL for frontend access
+   */
+  private convertS3ToHttpUrl(s3Url: string): string {
+    if (!s3Url) return s3Url;
+    
+    // If already an HTTP URL, return as-is
+    if (s3Url.startsWith('http://') || s3Url.startsWith('https://')) {
+      return s3Url;
+    }
+    
+    // Convert s3://bucket-name/path to http://localhost:4566/bucket-name/path
+    if (s3Url.startsWith('s3://')) {
+      const s3PublicUrl = this.configService.get<string>('S3_PUBLIC_URL', 'http://localhost:4566');
+      const pathWithoutProtocol = s3Url.replace('s3://', '');
+      return `${s3PublicUrl}/${pathWithoutProtocol}`;
+    }
+    
+    return s3Url;
   }
 
   /**

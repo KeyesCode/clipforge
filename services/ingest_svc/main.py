@@ -93,6 +93,9 @@ class ChunkMetadata(BaseModel):
     resolution: str
     fps: float
     bitrate: int
+    thumbnail_path: Optional[str] = None  # Local thumbnail path
+    thumbnail_s3_url: Optional[str] = None  # S3 thumbnail URL
+    thumbnail_s3_key: Optional[str] = None  # S3 thumbnail key
 
 class StreamMetadata(BaseModel):
     stream_id: str
@@ -362,6 +365,23 @@ class IngestService:
                     # Get chunk file info
                     chunk_size = chunk_path.stat().st_size
                     
+                    # Generate thumbnail for chunk
+                    thumbnail_path = chunks_dir / f"{chunk_id}_thumbnail.jpg"
+                    try:
+                        (
+                            ffmpeg
+                            .input(str(chunk_path), ss=duration/2)  # Get frame from middle of chunk
+                            .output(str(thumbnail_path), vframes=1, format='image2', vcodec='mjpeg')
+                            .overwrite_output()
+                            .run(quiet=True, capture_stdout=True)
+                        )
+                        logger.info("Generated thumbnail for chunk", chunk_id=chunk_id, thumbnail_path=str(thumbnail_path))
+                    except ffmpeg.Error as e:
+                        logger.warning("Failed to generate thumbnail for chunk", 
+                                     chunk_id=chunk_id, 
+                                     error=e.stderr.decode() if e.stderr else str(e))
+                        thumbnail_path = None
+
                     # Upload chunk to S3
                     chunk_s3_key = f"chunks/{stream_metadata.stream_id}/{chunk_id}.mp4"
                     logger.info("Uploading chunk to S3", chunk_id=chunk_id, s3_key=chunk_s3_key)
@@ -370,6 +390,17 @@ class IngestService:
                     if not chunk_s3_url:
                         logger.error("Failed to upload chunk to S3", chunk_id=chunk_id)
                         continue  # Skip this chunk if upload fails
+                    
+                    # Upload thumbnail to S3 if generated successfully
+                    thumbnail_s3_url = None
+                    thumbnail_s3_key = None
+                    if thumbnail_path and thumbnail_path.exists():
+                        thumbnail_s3_key = f"chunks/{stream_metadata.stream_id}/{chunk_id}_thumbnail.jpg"
+                        logger.info("Uploading chunk thumbnail to S3", chunk_id=chunk_id, s3_key=thumbnail_s3_key)
+                        thumbnail_s3_url = self.s3_client.upload_file(str(thumbnail_path), thumbnail_s3_key)
+                        
+                        if not thumbnail_s3_url:
+                            logger.warning("Failed to upload chunk thumbnail to S3", chunk_id=chunk_id)
                     
                     # Get media info for chunk
                     media_info = MediaInfo.parse(str(chunk_path))
@@ -387,7 +418,10 @@ class IngestService:
                         file_size=chunk_size,
                         resolution=f"{video_track.width}x{video_track.height}" if video_track else stream_metadata.resolution,
                         fps=float(video_track.frame_rate or stream_metadata.fps),
-                        bitrate=int(video_track.bit_rate or 0)
+                        bitrate=int(video_track.bit_rate or 0),
+                        thumbnail_path=str(thumbnail_path) if thumbnail_path else None,
+                        thumbnail_s3_url=thumbnail_s3_url,
+                        thumbnail_s3_key=thumbnail_s3_key
                     )
 
                     chunks.append(chunk_metadata)
@@ -520,10 +554,15 @@ class IngestService:
                     "endTime": chunk.end_time,
                     "duration": chunk.duration,
                     "filePath": chunk.file_path,
+                    "s3Url": chunk.s3_url,
+                    "s3Key": chunk.s3_key,
                     "fileSize": chunk.file_size,
                     "resolution": chunk.resolution,
                     "fps": chunk.fps,
-                    "bitrate": chunk.bitrate
+                    "bitrate": chunk.bitrate,
+                    "thumbnailPath": chunk.thumbnail_path,
+                    "thumbnailS3Url": chunk.thumbnail_s3_url,
+                    "thumbnailS3Key": chunk.thumbnail_s3_key
                 })
 
             await self.publish_event("stream.chunked", {
