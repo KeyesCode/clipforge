@@ -406,7 +406,10 @@ async def render_video_clip(request: RenderRequest, update_progress=None) -> Dic
             raise Exception("Failed to upload rendered video to S3")
         
         # Get file metadata
-        file_size = os.path.getsize(output_local_path)
+        if os.path.exists(output_local_path):
+            file_size = os.path.getsize(output_local_path)
+        else:
+            file_size = 0
         
         if update_progress:
             update_progress(100, "Render job completed successfully")
@@ -433,15 +436,22 @@ async def extract_video_segment(
     duration: float,
     render_config: RenderConfig
 ):
-    """Extract video segment using FFmpeg"""
+    """Extract video segment using FFmpeg with intelligent layout optimization"""
     import ffmpeg
+    from video_layout import analyze_video_layout, create_optimized_layout_filter, get_layout_info
     
-    # First, validate that the source video is long enough for the requested segment
+    # Validate that the source video is long enough for the requested segment
     print(f"🎬 EXTRACT: Validating source video duration...")
     try:
         probe = ffmpeg.probe(source_path)
         video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
-        source_duration = float(video_stream.get('duration', 0))
+        
+        # Safe duration conversion
+        source_duration_raw = video_stream.get('duration', 0)
+        try:
+            source_duration = float(source_duration_raw) if source_duration_raw else 0.0
+        except (ValueError, TypeError):
+            source_duration = 0.0
         
         print(f"🎬 EXTRACT: Source video duration: {source_duration}s")
         print(f"🎬 EXTRACT: Requested start time: {start_time}s")
@@ -449,10 +459,10 @@ async def extract_video_segment(
         print(f"🎬 EXTRACT: Segment end time: {start_time + duration}s")
         
         # Check if the requested segment is within the video bounds
-        if start_time >= source_duration:
+        if source_duration > 0 and start_time >= source_duration:
             raise ValueError(f"Start time {start_time}s is beyond video duration {source_duration}s")
         
-        if start_time + duration > source_duration:
+        if source_duration > 0 and start_time + duration > source_duration:
             # Adjust duration to fit within video bounds
             adjusted_duration = source_duration - start_time
             print(f"🎬 EXTRACT: ⚠️  Adjusting duration from {duration}s to {adjusted_duration}s to fit within video bounds")
@@ -485,45 +495,127 @@ async def extract_video_segment(
     print(f"🎬 EXTRACT: Target resolution: {target_resolution} ({width}x{height})")
     
     try:
-        print(f"🎬 EXTRACT: Starting video segment extraction")
+        print(f"🎬 EXTRACT: Starting intelligent video segment extraction with layout optimization")
         print(f"🎬 EXTRACT: Source: {source_path}")
         print(f"🎬 EXTRACT: Output: {output_path}")
         print(f"🎬 EXTRACT: Start time: {start_time}s")
         print(f"🎬 EXTRACT: Duration: {duration}s")
         print(f"🎬 EXTRACT: Target resolution: {width}x{height}")
         
-        # FFmpeg pipeline for video extraction and formatting
-        # Use ss (seek start) and t (duration) for precise segment extraction
-        print(f"🎬 EXTRACT: Creating input stream with ss={start_time}, t={duration}")
+        # Basic parameter validation
+        if width == 0 or height == 0:
+            raise ValueError(f"Invalid resolution: {width}x{height}")
+        if duration <= 0:
+            raise ValueError(f"Invalid duration: {duration}s")
         
-        # Simplified approach: extract segment first, then scale
-        output_stream = ffmpeg.input(source_path, ss=start_time, t=duration).output(
-            output_path,
-            vf=f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black',
-            vcodec='libx264',
-            acodec='aac',
-            crf=23,
-            preset='medium',
-            movflags='faststart',
-            strict='-2',
-            loglevel='info'  # Enable more logging
+        # INTELLIGENT LAYOUT ANALYSIS: Re-enabled with enhanced error handling
+        print(f"🎬 LAYOUT: Analyzing video for face-cam and gameplay areas...")
+        try:
+            print(f"🎬 LAYOUT: Starting analyze_video_layout for {source_path}")
+            layout_config = analyze_video_layout(source_path, num_samples=10)  # Quick analysis
+            print(f"🎬 LAYOUT: analyze_video_layout completed, result keys: {list(layout_config.keys())}")
+            
+            layout_info = get_layout_info(layout_config)
+            print(f"🎬 LAYOUT: get_layout_info completed, analysis_success: {layout_info.get('analysis_success', False)}")
+            
+        except ZeroDivisionError as e:
+            print(f"🎬 LAYOUT: ❌ Division by zero error in layout analysis: {e}")
+            print(f"🎬 LAYOUT: This should not happen with our safety checks - investigate further")
+            import traceback
+            print(f"🎬 LAYOUT: Traceback: {traceback.format_exc()}")
+            # Provide safe fallback
+            layout_config = {"face_cam": None, "game_crop": None, "error": f"Division by zero: {str(e)}"}
+            layout_info = {"has_face_cam": False, "has_gameplay_optimization": False, "analysis_success": False}
+            
+        except Exception as e:
+            print(f"🎬 LAYOUT: ❌ Layout analysis failed: {e}")
+            print(f"🎬 LAYOUT: Exception type: {type(e)}")
+            import traceback
+            print(f"🎬 LAYOUT: Traceback: {traceback.format_exc()}")
+            # Provide safe fallback
+            layout_config = {"face_cam": None, "game_crop": None, "error": f"Analysis failed: {str(e)}"}
+            layout_info = {"has_face_cam": False, "has_gameplay_optimization": False, "analysis_success": False}
+        
+        print(f"🎬 LAYOUT: Analysis complete:")
+        print(f"🎬 LAYOUT:   Face-cam detected: {layout_info['has_face_cam']}")
+        print(f"🎬 LAYOUT:   Gameplay optimization: {layout_info['has_gameplay_optimization']}")
+        
+        if layout_info['has_face_cam']:
+            print(f"🎬 LAYOUT:   Face-cam area: {layout_info.get('face_cam_area_percent', 0):.1f}% of frame")
+            print(f"🎬 LAYOUT:   Face-cam position: {layout_info.get('face_cam_position', 'unknown')}")
+        
+        if layout_info['has_gameplay_optimization']:
+            print(f"🎬 LAYOUT:   Gameplay area: {layout_info.get('gameplay_crop_area_percent', 0):.1f}% of frame")
+            print(f"🎬 LAYOUT:   Gameplay position: {layout_info.get('gameplay_crop_position', 'unknown')}")
+        
+        # Choose processing approach based on platform and layout analysis
+        use_intelligent_layout = (
+            render_config.platform in ["youtube_shorts", "tiktok", "instagram_reels"] and
+            (layout_info['has_face_cam'] or layout_info['has_gameplay_optimization']) and
+            layout_info['analysis_success'] and
+            "error" not in layout_config  # Skip if there were errors
         )
         
-        print(f"🎬 EXTRACT: Running FFmpeg command...")
+        if use_intelligent_layout:
+            print(f"🎬 EXTRACT: Using intelligent layout optimization for {render_config.platform}")
+            
+            # Create optimized layout filter
+            video_size = layout_config.get("video_size", (1920, 1080))
+            layout_filter = create_optimized_layout_filter(
+                layout_config.get("face_cam"),
+                layout_config.get("game_crop"),
+                video_size
+            )
+            
+            print(f"🎬 EXTRACT: Layout filter: {layout_filter[:100]}...")  # Show first 100 chars
+            
+            # Use complex filter for intelligent layout
+            input_stream = ffmpeg.input(source_path, ss=start_time, t=duration)
+            output_stream = ffmpeg.output(
+                input_stream,
+                output_path,
+                filter_complex=layout_filter,
+                map="[final]",
+                vcodec='libx264',
+                acodec='aac',
+                crf=23,
+                preset='medium',
+                movflags='faststart',
+                strict='-2',
+                loglevel='info'
+            )
+            
+        else:
+            print(f"🎬 EXTRACT: Using standard scaling approach")
+            
+            # Build video filter for standard scaling
+            video_filter = f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black'
+            
+            # Create FFmpeg pipeline
+            output_stream = ffmpeg.input(source_path, ss=start_time, t=duration).output(
+                output_path,
+                vf=video_filter,
+                vcodec='libx264',
+                acodec='aac',
+                crf=23,
+                preset='medium',
+                movflags='faststart',
+                strict='-2',
+                loglevel='info'
+            )
         
-        # Run with verbose output for debugging
-        print(f"🎬 EXTRACT: About to run FFmpeg command")
+        print(f"🎬 EXTRACT: Running FFmpeg command...")
         result = ffmpeg.run(output_stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
-        print(f"🎬 EXTRACT: FFmpeg command completed")
+        print(f"🎬 EXTRACT: FFmpeg command completed successfully")
         
         print(f"🎬 EXTRACT: ✅ Video segment extraction completed successfully!")
         
-        # Check the output file properties
+        # Verify output and get file properties
         if os.path.exists(output_path):
             file_size = os.path.getsize(output_path)
             print(f"🎬 EXTRACT: Output file size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
             
-            # Try to get video info
+            # Probe output video properties
             try:
                 probe = ffmpeg.probe(output_path)
                 video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
@@ -605,23 +697,35 @@ async def add_captions_to_video(
     subtitle_count = 0
     with open(srt_path, 'w', encoding='utf-8') as f:
         for i, segment in enumerate(captions.segments, 1):
-            # Adjust timing relative to video start
-            start_adjusted = max(0, segment.start - video_start_time)
-            end_adjusted = max(0, segment.end - video_start_time)
-            
             print(f"🎬 CAPTIONS: Processing segment {i}:")
             print(f"🎬 CAPTIONS:   Original: {segment.start:.1f}s - {segment.end:.1f}s")
-            print(f"🎬 CAPTIONS:   Adjusted: {start_adjusted:.1f}s - {end_adjusted:.1f}s")
             print(f"🎬 CAPTIONS:   Text: '{segment.text.strip()[:50]}...'")
             
-            if start_adjusted >= 0 and end_adjusted > start_adjusted and segment.text.strip():
-                f.write(f"{i}\n")
-                f.write(f"{format_srt_time(start_adjusted)} --> {format_srt_time(end_adjusted)}\n")
-                f.write(f"{segment.text.strip()}\n\n")
-                subtitle_count += 1
-                print(f"🎬 CAPTIONS:   ✅ Added to SRT file")
+            # FIX: Captions are already relative to the extracted video segment
+            # We should NOT subtract video_start_time - that was the bug!
+            # The extracted video starts at 0s, so captions should use their original timing
+            start_time = segment.start
+            end_time = segment.end
+            
+            print(f"🎬 CAPTIONS:   Using timing as-is: {start_time:.1f}s - {end_time:.1f}s")
+            
+            # Basic validation
+            if start_time >= 0 and end_time > start_time and segment.text.strip():
+                try:
+                    start_time_str = format_srt_time(start_time)
+                    end_time_str = format_srt_time(end_time)
+                    
+                    f.write(f"{i}\n")
+                    f.write(f"{start_time_str} --> {end_time_str}\n")
+                    f.write(f"{segment.text.strip()}\n\n")
+                    subtitle_count += 1
+                    print(f"🎬 CAPTIONS:   ✅ Added to SRT file")
+                    
+                except Exception as srt_error:
+                    print(f"🎬 CAPTIONS: ❌ SRT formatting error: {srt_error}")
+                    raise srt_error
             else:
-                print(f"🎬 CAPTIONS:   ❌ Skipped (invalid timing or empty text)")
+                print(f"🎬 CAPTIONS:   ❌ Skipped (invalid timing: {start_time:.1f}s - {end_time:.1f}s or empty text)")
     
     print(f"🎬 CAPTIONS: Created {subtitle_count} subtitle entries in SRT file")
     logger.info(f"Created {subtitle_count} subtitle entries")
@@ -747,12 +851,14 @@ async def generate_thumbnail(video_path: str, thumbnail_path: str):
             return
         
         print(f"🎬 THUMBNAIL: Source video exists, generating thumbnail...")
+        
+        # Generate thumbnail at 1 second mark
         stream = ffmpeg.input(video_path, ss=1)  # Take frame at 1 second
         stream = ffmpeg.filter(stream, 'scale', 480, 270)  # Thumbnail size
         stream = ffmpeg.output(stream, thumbnail_path, vframes=1)
         
         print(f"🎬 THUMBNAIL: Running FFmpeg command...")
-        ffmpeg.run(stream, overwrite_output=True, quiet=False)  # Enable output for debugging
+        ffmpeg.run(stream, overwrite_output=True, quiet=False)
         
         # Check if thumbnail was created
         if os.path.exists(thumbnail_path):
@@ -775,6 +881,14 @@ async def generate_thumbnail(video_path: str, thumbnail_path: str):
 
 def format_srt_time(seconds: float) -> str:
     """Format time for SRT subtitle format"""
+    # Basic validation
+    if not isinstance(seconds, (int, float)):
+        raise TypeError(f"seconds must be a number, got {type(seconds)}")
+    
+    if seconds < 0:
+        seconds = 0
+    
+    # Time calculations
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = seconds % 60

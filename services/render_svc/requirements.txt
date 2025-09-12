@@ -12,6 +12,7 @@ ffmpeg-python==0.2.0
 opencv-python-headless==4.8.1.78
 numpy==1.24.3
 pillow==10.1.0
+# Note: opencv-python-headless already includes face detection capabilities
 
 # S3 integration
 boto3==1.34.0
