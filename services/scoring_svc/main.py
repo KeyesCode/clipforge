@@ -165,6 +165,17 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
     
     print(f"🎯 ANALYZE: Processing {len(chunks)} chunks with threshold {HIGHLIGHT_THRESHOLD}")
     
+    # Calculate the maximum reasonable duration based on the chunks provided
+    # Use the latest chunk end time as the upper bound
+    max_chunk_end_time = 0
+    for chunk in chunks:
+        chunk_end_time = chunk.chunkData.startTime + chunk.chunkData.duration
+        max_chunk_end_time = max(max_chunk_end_time, chunk_end_time)
+    
+    # Add a small buffer (10%) to the max time to account for slight variations
+    estimated_video_duration = max_chunk_end_time * 1.1
+    print(f"🎯 ANALYZE: Estimated video duration based on chunks: {estimated_video_duration:.1f}s (max chunk end: {max_chunk_end_time:.1f}s)")
+    
     for i, chunk in enumerate(chunks):
         print(f"🎯 CHUNK {i+1}: ID={chunk.chunkId}")
         print(f"🎯 CHUNK {i+1}: Has transcription: {bool(chunk.chunkData.transcription)}")
@@ -179,7 +190,28 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
         # Add qualifying segments to highlights
         for segment in highlight_segments:
             if segment["score"] >= HIGHLIGHT_THRESHOLD:
+                # Calculate absolute start time
+                absolute_start_time = chunk.chunkData.startTime + segment["startTime"]
+                
                 print(f"🎯 SEGMENT: ✅ HIGHLIGHT! Score={segment['score']:.3f}, Duration={segment['duration']:.1f}s")
+                print(f"🎯 SEGMENT: Absolute start time: {absolute_start_time:.1f}s (chunk: {chunk.chunkData.startTime:.1f}s + segment: {segment['startTime']:.1f}s)")
+                
+                # Validate that absolute start time is within estimated video duration
+                if absolute_start_time >= estimated_video_duration:
+                    print(f"🎯 SEGMENT: ⚠️  Absolute start time {absolute_start_time:.1f}s exceeds estimated video duration ({estimated_video_duration:.1f}s)")
+                    print(f"🎯 SEGMENT: ❌ Skipping segment to avoid render errors")
+                    continue
+                
+                if absolute_start_time + segment["duration"] >= estimated_video_duration:
+                    # Adjust duration to fit within video bounds
+                    adjusted_duration = estimated_video_duration - absolute_start_time - 1  # Leave 1 second buffer
+                    if adjusted_duration <= 5:  # If adjusted duration is too short, skip
+                        print(f"🎯 SEGMENT: ❌ Adjusted duration would be too short ({adjusted_duration:.1f}s), skipping")
+                        continue
+                    
+                    print(f"🎯 SEGMENT: ⚠️  Adjusting duration from {segment['duration']:.1f}s to {adjusted_duration:.1f}s to fit video bounds")
+                    segment["duration"] = adjusted_duration
+                
                 highlights.append({
                     "chunkId": chunk.chunkId,
                     "score": segment["score"],
@@ -189,7 +221,7 @@ async def analyze_and_score_chunks(chunks: List[ChunkInput]) -> List[Dict[str, A
                         "duration": segment["duration"],
                         "confidence": segment["confidence"],
                         "reason": segment["reason"],
-                        "absoluteStartTime": chunk.chunkData.startTime + segment["startTime"]  # Absolute time in stream
+                        "absoluteStartTime": absolute_start_time  # Absolute time in stream
                     }],
                     "reasons": segment["reasons"],
                     "metadata": {

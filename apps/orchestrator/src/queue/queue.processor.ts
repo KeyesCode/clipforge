@@ -659,11 +659,26 @@ export class ProcessingQueueProcessor {
       const savedClip = await this.clipRepository.save(clip);
       this.logger.log(`Created clip entity ${savedClip.id} for segment in chunk ${chunk.id}`);
       
+      // Extract caption segments for this time range
+      const originalSegments = chunk.transcription?.segments || [];
+      const extractedCaptions = this.extractCaptionSegmentsForTimeRange(
+        originalSegments, 
+        segment.absoluteStartTime, 
+        segment.absoluteStartTime + segment.duration
+      );
+
+      this.logger.log(`Caption extraction for segment ${segment.absoluteStartTime}-${segment.absoluteStartTime + segment.duration}:`, {
+        originalSegmentCount: originalSegments.length,
+        extractedCaptionCount: extractedCaptions.length,
+        extractedCaptions: extractedCaptions.slice(0, 3), // Show first 3
+        segmentTimeRange: `${segment.absoluteStartTime} - ${segment.absoluteStartTime + segment.duration}`
+      });
+
       // Calculate the render timing relative to the chunk's source video
       const renderRequest = {
         clipId: savedClip.id,
         sourceVideo: chunk.videoPath,
-        startTime: segment.absoluteStartTime, // Use absolute time for render service
+        startTime: segment.startTime, // Use chunk-relative time since we're rendering from chunk file
         duration: segment.duration, // Use the precise segment duration
         renderConfig: {
           format: 'mp4',
@@ -671,11 +686,7 @@ export class ProcessingQueueProcessor {
           platform: 'youtube_shorts',
         },
         captions: {
-          segments: this.extractCaptionSegmentsForTimeRange(
-            chunk.transcription?.segments || [], 
-            segment.absoluteStartTime, 
-            segment.absoluteStartTime + segment.duration
-          ),
+          segments: extractedCaptions,
           style: 'gaming',
         },
         effects: [],
@@ -684,8 +695,9 @@ export class ProcessingQueueProcessor {
       this.logger.log(`Sending render request for segment in chunk ${chunk.id} -> clip ${savedClip.id}:`, {
         clipId: renderRequest.clipId,
         sourceVideo: renderRequest.sourceVideo,
-        startTime: renderRequest.startTime,
+        startTime: renderRequest.startTime, // Now chunk-relative
         duration: renderRequest.duration,
+        absoluteStartTime: segment.absoluteStartTime, // For reference
         segmentReason: segment.reason,
         segmentConfidence: segment.confidence
       });

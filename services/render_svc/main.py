@@ -328,21 +328,52 @@ async def render_video_clip(request: RenderRequest, update_progress=None) -> Dic
             update_progress(60, "Video segment extraction completed")
         
         # Add captions if provided
-        if request.captions.segments:
+        print(f"🎬 RENDER: Checking captions - segments count: {len(request.captions.segments) if request.captions.segments else 0}")
+        print(f"🎬 RENDER: Caption config: {request.captions}")
+        
+        if request.captions.segments and len(request.captions.segments) > 0:
+            print(f"🎬 RENDER: Adding captions to video with {len(request.captions.segments)} segments")
+            print(f"🎬 RENDER: Caption segments:")
+            for i, seg in enumerate(request.captions.segments[:5]):  # Show first 5
+                print(f"🎬 RENDER:   Segment {i+1}: {seg.start:.1f}s - {seg.end:.1f}s: '{seg.text[:50]}...'")
+            print(f"🎬 RENDER: Video start time for adjustment: {request.startTime}s")
+            
             if update_progress:
                 update_progress(70, "Adding captions to video")
                 
             captioned_path = os.path.join(work_dir, f"{clip_id}_captioned.mp4")
-            await add_captions_to_video(
-                output_local_path,
-                captioned_path, 
-                request.captions,
-                request.startTime
-            )
-            output_local_path = captioned_path
+            
+            try:
+                print(f"🎬 RENDER: Starting caption overlay process...")
+                await add_captions_to_video(
+                    output_local_path,
+                    captioned_path, 
+                    request.captions,
+                    request.startTime
+                )
+                
+                # Verify the captioned file was created and is different from original
+                if os.path.exists(captioned_path):
+                    original_size = os.path.getsize(output_local_path)
+                    captioned_size = os.path.getsize(captioned_path)
+                    print(f"🎬 RENDER: Caption overlay completed successfully!")
+                    print(f"🎬 RENDER: Original file: {original_size} bytes")
+                    print(f"🎬 RENDER: Captioned file: {captioned_size} bytes")
+                    output_local_path = captioned_path
+                else:
+                    print(f"🎬 RENDER: ⚠️  Captioned file was not created, using original")
+                
+            except Exception as caption_error:
+                print(f"🎬 RENDER: ⚠️  Caption overlay failed: {caption_error}")
+                print(f"🎬 RENDER: Continuing with original video without captions")
             
             if update_progress:
                 update_progress(80, "Caption overlay completed")
+        else:
+            print(f"🎬 RENDER: No caption segments provided - skipping caption overlay")
+            print(f"🎬 RENDER: Captions object: {request.captions}")
+            if update_progress:
+                update_progress(80, "Skipping captions (no segments provided)")
         
         # Generate thumbnail  
         if update_progress:
@@ -404,6 +435,35 @@ async def extract_video_segment(
 ):
     """Extract video segment using FFmpeg"""
     import ffmpeg
+    
+    # First, validate that the source video is long enough for the requested segment
+    print(f"🎬 EXTRACT: Validating source video duration...")
+    try:
+        probe = ffmpeg.probe(source_path)
+        video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+        source_duration = float(video_stream.get('duration', 0))
+        
+        print(f"🎬 EXTRACT: Source video duration: {source_duration}s")
+        print(f"🎬 EXTRACT: Requested start time: {start_time}s")
+        print(f"🎬 EXTRACT: Requested duration: {duration}s")
+        print(f"🎬 EXTRACT: Segment end time: {start_time + duration}s")
+        
+        # Check if the requested segment is within the video bounds
+        if start_time >= source_duration:
+            raise ValueError(f"Start time {start_time}s is beyond video duration {source_duration}s")
+        
+        if start_time + duration > source_duration:
+            # Adjust duration to fit within video bounds
+            adjusted_duration = source_duration - start_time
+            print(f"🎬 EXTRACT: ⚠️  Adjusting duration from {duration}s to {adjusted_duration}s to fit within video bounds")
+            duration = adjusted_duration
+            
+            if duration <= 0:
+                raise ValueError(f"Adjusted duration {duration}s is invalid")
+        
+    except (KeyError, StopIteration) as e:
+        print(f"🎬 EXTRACT: ⚠️  Could not probe video duration: {e}")
+        print(f"🎬 EXTRACT: Proceeding with original parameters...")
     
     # Platform-specific resolution mapping
     resolution_map = {
@@ -522,8 +582,15 @@ async def add_captions_to_video(
     """Add captions overlay to video"""
     import ffmpeg
     
+    print(f"🎬 CAPTIONS: Starting caption overlay process")
+    print(f"🎬 CAPTIONS: Input: {input_path}")
+    print(f"🎬 CAPTIONS: Output: {output_path}")
+    print(f"🎬 CAPTIONS: Video start time: {video_start_time}s")
+    print(f"🎬 CAPTIONS: Segments provided: {len(captions.segments) if captions.segments else 0}")
+    
     # Skip captions if no segments provided
     if not captions.segments:
+        print(f"🎬 CAPTIONS: No caption segments provided, copying video without captions")
         logger.info("No caption segments provided, copying video without captions")
         # Just copy the file without captions
         import shutil
@@ -532,6 +599,7 @@ async def add_captions_to_video(
     
     # Create subtitle file
     srt_path = input_path.replace('.mp4', '.srt')
+    print(f"🎬 CAPTIONS: Creating subtitle file: {srt_path}")
     logger.info(f"Creating subtitle file: {srt_path}")
     
     subtitle_count = 0
@@ -541,16 +609,26 @@ async def add_captions_to_video(
             start_adjusted = max(0, segment.start - video_start_time)
             end_adjusted = max(0, segment.end - video_start_time)
             
+            print(f"🎬 CAPTIONS: Processing segment {i}:")
+            print(f"🎬 CAPTIONS:   Original: {segment.start:.1f}s - {segment.end:.1f}s")
+            print(f"🎬 CAPTIONS:   Adjusted: {start_adjusted:.1f}s - {end_adjusted:.1f}s")
+            print(f"🎬 CAPTIONS:   Text: '{segment.text.strip()[:50]}...'")
+            
             if start_adjusted >= 0 and end_adjusted > start_adjusted and segment.text.strip():
                 f.write(f"{i}\n")
                 f.write(f"{format_srt_time(start_adjusted)} --> {format_srt_time(end_adjusted)}\n")
                 f.write(f"{segment.text.strip()}\n\n")
                 subtitle_count += 1
+                print(f"🎬 CAPTIONS:   ✅ Added to SRT file")
+            else:
+                print(f"🎬 CAPTIONS:   ❌ Skipped (invalid timing or empty text)")
     
+    print(f"🎬 CAPTIONS: Created {subtitle_count} subtitle entries in SRT file")
     logger.info(f"Created {subtitle_count} subtitle entries")
     
     # If no valid subtitles, just copy the video
     if subtitle_count == 0:
+        print(f"🎬 CAPTIONS: No valid subtitles found, copying video without captions")
         logger.info("No valid subtitles found, copying video without captions")
         import shutil
         shutil.copy2(input_path, output_path)
@@ -560,34 +638,93 @@ async def add_captions_to_video(
     
     try:
         # Apply captions with simpler, more reliable approach
+        print(f"🎬 CAPTIONS: Applying captions with FFmpeg...")
         logger.info("Applying captions with FFmpeg")
-        stream = ffmpeg.input(input_path)
-        stream = ffmpeg.filter(stream, 'subtitles', srt_path,
-                             force_style='FontName=Arial,FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=1')
-        stream = ffmpeg.output(stream, output_path,
+        
+        # Check if SRT file exists and show its content
+        if os.path.exists(srt_path):
+            srt_size = os.path.getsize(srt_path)
+            print(f"🎬 CAPTIONS: SRT file size: {srt_size} bytes")
+            with open(srt_path, 'r', encoding='utf-8') as f:
+                srt_content = f.read()[:500]  # First 500 characters
+                print(f"🎬 CAPTIONS: SRT content preview:")
+                print(f"🎬 CAPTIONS: {srt_content}")
+        else:
+            print(f"🎬 CAPTIONS: ❌ SRT file not found: {srt_path}")
+            raise FileNotFoundError(f"SRT file not found: {srt_path}")
+        
+        print(f"🎬 CAPTIONS: Building FFmpeg pipeline...")
+        
+        # Create separate input streams for video and audio
+        input_stream = ffmpeg.input(input_path)
+        
+        # Apply subtitles filter only to video stream
+        video_stream = ffmpeg.filter(input_stream['v'], 'subtitles', srt_path,
+                                   force_style='FontName=Arial,FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=1')
+        
+        # Keep original audio stream
+        audio_stream = input_stream['a']
+        
+        # Combine video with subtitles and original audio
+        stream = ffmpeg.output(video_stream, audio_stream, output_path,
                              vcodec='libx264',
                              acodec='aac', 
                              crf=23,
                              preset='medium')
-        ffmpeg.run(stream, overwrite_output=True, quiet=False, capture_stdout=True, capture_stderr=True)
         
+        print(f"🎬 CAPTIONS: Running FFmpeg command...")
+        result = ffmpeg.run(stream, overwrite_output=True, quiet=False, capture_stdout=True, capture_stderr=True)
+        
+        print(f"🎬 CAPTIONS: FFmpeg completed successfully!")
         logger.info("Caption overlay completed successfully")
+        
+        # Verify output file was created
+        if os.path.exists(output_path):
+            output_size = os.path.getsize(output_path)
+            print(f"🎬 CAPTIONS: Output file created: {output_size} bytes")
+        else:
+            print(f"🎬 CAPTIONS: ❌ Output file not created!")
         
         # Cleanup subtitle file
         if os.path.exists(srt_path):
             os.remove(srt_path)
+            print(f"🎬 CAPTIONS: Cleaned up SRT file")
         
     except ffmpeg.Error as e:
-        logger.error("FFmpeg error during caption overlay", error=str(e), stderr=e.stderr.decode() if e.stderr else "No stderr")
+        stderr_text = e.stderr.decode() if e.stderr else "No stderr"
+        print(f"🎬 CAPTIONS: ❌ FFmpeg error during caption overlay: {e}")
+        print(f"🎬 CAPTIONS: FFmpeg stderr: {stderr_text}")
+        logger.error("FFmpeg error during caption overlay", error=str(e), stderr=stderr_text)
         
         # Fallback: copy video without captions
+        print(f"🎬 CAPTIONS: Falling back to video without captions")
         logger.info("Falling back to video without captions")
         try:
             import shutil
             shutil.copy2(input_path, output_path)
+            print(f"🎬 CAPTIONS: Fallback copy completed")
             logger.info("Fallback copy completed")
         except Exception as copy_error:
+            print(f"🎬 CAPTIONS: ❌ Fallback copy failed: {copy_error}")
             logger.error("Fallback copy failed", error=str(copy_error))
+            raise Exception(f"Caption overlay failed and fallback copy failed: {copy_error}")
+        
+        # Cleanup subtitle file
+        if os.path.exists(srt_path):
+            os.remove(srt_path)
+    
+    except Exception as e:
+        print(f"🎬 CAPTIONS: ❌ Unexpected error during caption overlay: {e}")
+        logger.error("Unexpected error during caption overlay", error=str(e))
+        
+        # Fallback: copy video without captions
+        print(f"🎬 CAPTIONS: Falling back to video without captions")
+        try:
+            import shutil
+            shutil.copy2(input_path, output_path)
+            print(f"🎬 CAPTIONS: Fallback copy completed")
+        except Exception as copy_error:
+            print(f"🎬 CAPTIONS: ❌ Fallback copy failed: {copy_error}")
             raise Exception(f"Caption overlay failed and fallback copy failed: {copy_error}")
         
         # Cleanup subtitle file
